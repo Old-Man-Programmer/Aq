@@ -72,24 +72,21 @@ SDL_Renderer *_renderer;
 SDL_Texture *_texture;
 uint32_t *_screen;
 uint8_t *_cdata;
+bool _needsupdate = false;
 
 void color(uint8_t data, uint32_t *fg, uint32_t *bg)
 {
   int f = data>>4, b = data&0xF;
   *fg = _colors[f];
   *bg = _colors[b];
-//   *fg = 0xFF000000 | (aq_colors[f].r << 16) | (aq_colors[f].g << 8) | aq_colors[f].b;
-//   *bg = 0xFF000000 | (aq_colors[b].r << 16) | (aq_colors[b].g << 8) | aq_colors[b].b;
-//   *fg = SDL_MapRGB(_screen->format, aq_colors[f].r, aq_colors[f].g, aq_colors[f].b);
-//   *bg = SDL_MapRGB(_screen->format, aq_colors[b].r, aq_colors[b].g, aq_colors[b].b);
 }
 
-void putpixel(int x, int y, uint32_t pixel)
+inline void putpixel(int x, int y, uint32_t pixel)
 {
-  if (x < 0 || y < 0 || x > _texw || y > _texh) {
-    printf("x,y out of bounds (%d,%d)\n", x, y);
-    abort();
-  }
+//   if (x < 0 || y < 0 || x > _texw || y > _texh) {
+//     printf("x,y out of bounds (%d,%d)\n", x, y);
+//     abort();
+//   }
   _screen[(y*_texw)+x] = pixel;
 }
 
@@ -101,48 +98,37 @@ void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg)
     fprintf(stderr,"col,row out of range. (%d,%d)\n", col, row);
     abort();
   }
-  SDL_Rect rect = {.x=_border+col*8, .y=_border+row*8, .w=8, .h=8};
-  uint32_t *pixels;
-  int pitch;
-  if (SDL_LockTexture(_texture, &rect, (void **)&pixels, &pitch) < 0 ) {
-      fprintf(stderr, "Can't lock screen: %s\n", SDL_GetError());
-      return;
-  }
 
   uint8_t *cbyte = &_cdata[ch<<3];
 
+  int xoff = _border + col*8, yoff= _border + row*8;
+
   for(y=0; y < 8; y++, cbyte++) {
     for(cbit=128, x=0; x < 8; x++, (cbit>>=1)) {
-      pixels[x+(y*_texw)] = (*cbyte & cbit)? fg : bg;
+      putpixel(x+xoff, y+yoff, (*cbyte & cbit)? fg : bg);
     }
   }
 
-  SDL_UnlockTexture(_texture);
+  _needsupdate = true;
 }
 
 void fillrect(int x, int y, int width, int height, uint32_t bg)
 {
-  SDL_Rect rect = {.x=x, .y=y, .w=width, .h=height};
-  uint32_t *pixels;
-  int pitch;
-  if (SDL_LockTexture(_texture, &rect, (void **)&pixels, &pitch) < 0 ) {
-      fprintf(stderr, "Can't lock screen: %s\n", SDL_GetError());
-      return;
-  }
-
   for(int sy=0; sy < height; sy++) {
     for(int sx = 0; sx < width; sx++) {
-      pixels[sx+(sy*_texw)] = bg;
+      putpixel(x+sx, y+sy, bg);
     }
   }
-  SDL_UnlockTexture(_texture);
 }
 
 void screen_update(void)
 {
-  SDL_RenderClear(_renderer);
-  SDL_RenderCopy(_renderer, _texture, NULL, NULL);
-  SDL_RenderPresent(_renderer);
+  if (_needsupdate) {
+    SDL_UpdateTexture(_texture, NULL, _screen, _texw*sizeof(uint32_t));
+    SDL_RenderCopy(_renderer, _texture, NULL, NULL);
+    SDL_RenderPresent(_renderer);
+    _needsupdate = false;
+  }
 }
 
 void screen_init(void)
@@ -190,6 +176,7 @@ uint8_t screen_border(uint16_t addr, uint8_t data)
 
   if (_mem[addr] == data) return data;
   _mem[addr] = data;
+
   color(_bordercolor = data, &fg, &bg);
   fillrect(0, 0, _screen_w+(_border*2), _screen_h+(_border*2), bg);
   for(int r=0; r<24; r++) {
@@ -199,6 +186,7 @@ uint8_t screen_border(uint16_t addr, uint8_t data)
       writechar(c,r,load(SCREEN+pos), fg, bg);
     }
   }
+  _needsupdate = true;
   return data;
 }
 

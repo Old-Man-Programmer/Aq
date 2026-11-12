@@ -33,6 +33,7 @@
 #include "Aq.h"
 #include <SDL_audio.h>
 #include <time.h>
+#include <math.h>
 #include <pthread.h>
 
 /*

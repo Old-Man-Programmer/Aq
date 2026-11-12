@@ -1960,6 +1960,7 @@ static void run()
     _totclk += cycles;
     pixclocks += cycles;
 #define PROCESS_RATE 1000
+
     if (clocks > (CLKRATE+(PROCESS_RATE/2))/PROCESS_RATE) {
       SDL_Event event;
       static int keydown = 0;
@@ -1992,7 +1993,7 @@ static void run()
 	}
       }
       if (pixclocks > VSCLKS) {
-	screen_update();
+	if (!_batchmode) screen_update();
 	pixclocks -= VSCLKS;
       }
       aqsnd_process();

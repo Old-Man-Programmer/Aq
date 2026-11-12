@@ -2,7 +2,7 @@ prefix=/usr/local
 
 CC=gcc
 
-VERSION=0.4
+VERSION=0.5
 AQ_DEST=Aq
 IHX2BIN_DEST=ihx2bin
 BINDIR=${prefix}/bin

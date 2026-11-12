@@ -1,3 +1,9 @@
+Version 0.5:
+ screen.c:
+  - Reworked texture handling.  More time when doing a screen refresh, but less
+    time making changes (no more texture locking, just one big texture update
+    every 60th of a second.)  Seems to smooth out the delays
+
 Version 0.4:
  z80.c:
   - Fixed overflow for ADD, ADC, ADC16
@@ -24,6 +30,7 @@ Version 0.4:
   - Updated with version that supports making tapes (-t)
 
  exc:
+  - Updated (9-27)
   - Added aqarius.mac to main directory
 
  mem.c:

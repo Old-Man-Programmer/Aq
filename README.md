@@ -17,13 +17,6 @@ Changes in this version are shown in the CHANGES file.
 | `-E` | Use special extended basic ROM (ebasic.bin) mapped at 0x2000 |
 | `-B` | Run programs in "batch" mode, i.e. run in turbo w/o a screen |
 
-Requirements:
-ncurses (w/ wide character support)
-SDL2
-portaudio
-
-radofin.bin	- The BASIC ROM image for the Aquarius computer.
-
 
 asm/
 ├── aquarius.mac - Aquarius assembly definitions and macros
@@ -32,3 +25,10 @@ asm/
 │                  load at 0x2000
 ├── exc/         - Zexall -- The Z80 exerciser ported to Aquarius
 └── sndtest/     - Some AY-3-8910/8912 sound testing programs
+
+
+Requirements:
+ncurses (w/ wide character support)
+SDL2
+portaudio
+
