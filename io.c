@@ -16,7 +16,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
 #include "Aq.h"
 
 struct ports port[256];
@@ -25,7 +24,7 @@ keymode_t _keymode = TIMER;
 int _keydown=0;
 uint8_t _keyrow=0;
 
-int _key = 0, _ctrl = 0, _shift = 0;
+int _key = 0, _ctrl = 0, _shift = 0, _capslk = 0;
 
 #define CTRL	1
 #define SHIFT	2
@@ -108,7 +107,7 @@ int fixkeys(int key, int *shift, int *ctrl)
     if (key >= 32 && key <= 96 && mtable[key-32] != ' ') key = mtable[key-32];
     if (key == ':') *shift = false;
   } else {
-    if (key == '[' || key == ']' || key == '\'' || key == '`') *shift = true;
+    if (key == '[' || key == ']' || key == '\'') *shift = true;
   }
   return key;
 }
@@ -136,6 +135,7 @@ static void drain(void)
   }
   _nkeys--;
   if (_nkeys) _keydown = _keymode==TIMER? (KEYDOWN + (_keybuf[0]==6? KEYDOWN*3 : 0)) : KEYSCANS;
+  else _turbo &= ~TURBO_BASIC;
 }
 
 static uint8_t kb_read(uint8_t column)
@@ -159,6 +159,7 @@ static uint8_t kb_read(uint8_t column)
     if (_key) {
       k = &_keys[(int)_key+3];
       if (k->col & column) d |= k->row;
+      if (_capslk && (_key >= 'a' && _key <= 'z') && (column & 0x80)) d |= 0x10;
     }
     if (_shift && (column & 0x80)) d |= 0x10;
     if (_ctrl && (column & 0x80)) d |= 0x20;
@@ -205,7 +206,12 @@ uint8_t _swlock_pattern = 0;
 
 static void sw_lock(_U uint8_t top, uint8_t data)
 {
+  uint8_t old = _swlock_pattern;
+//  printf("Scamble code = %d\n", data);
   _swlock_pattern = data;
+  if (_gameromstart != 0xFFFF) {
+    for(int i=_gameromstart; i <= 0xFFFF; i++) _mem[i] ^= old ^ _swlock_pattern;
+  }
 }
 
 static uint8_t vs_read(_U uint8_t top)

@@ -16,7 +16,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
 #include <stdio.h>
 
 const char *_instr[256] = {
@@ -118,7 +117,7 @@ const char *DD_instr[] = {
   "C8", "C9", "CA", NULL, "CC", "CD", "CE", "CF",
   "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7",
   "D8", "D9", "DA", "DB", "DC", "DD", "DE", "DF",
-  "E0", "SET 7,(IX+d),A POP IX", "E2", "EX (SP),IX", "E4", "PUSH IX", "E6", "E7",
+  "E0", "POP IX", "E2", "EX (SP),IX", "E4", "PUSH IX", "E6", "E7",
   "E8", "JP (IX)", "EA", "EB", "EC", "ED", "EE", "EF",
   "F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7",
   "F8", "LD SP,IX", "FA", "FB", "FC", "FD", "FE", "FF"

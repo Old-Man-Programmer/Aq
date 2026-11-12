@@ -16,7 +16,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
 #include "Aq.h"
 
 int *_keybuf, _nkeys=0, _kb[MAXKEYS+1];
@@ -25,6 +24,7 @@ FILE *_log, *_ilog;
 
 const char *_gamerom = NULL;
 const char *_tape = NULL;
+bool _extendedbasic = false, _batchmode = false;
 
 int main(int argc, char **argv)
 {
@@ -88,6 +88,13 @@ int main(int argc, char **argv)
 	case 'k':
 	  _keymode = SCAN;
 	  break;
+	case 'E':
+	  _extendedbasic = true;
+	  break;
+	case 'B':
+	  _batchmode = true;
+	  _turbo = TURBO_BATCH;
+	  break;
 	}
       }
     } else {
@@ -95,8 +102,8 @@ int main(int argc, char **argv)
     }
   }
 
-  if (basicfile != NULL) {
-    int fd = open(basicfile, O_RDONLY);
+  int fd;
+  if (basicfile != NULL && (fd = open(basicfile, O_RDONLY)) >= 0) {
     struct stat st;
     fstat(fd, &st);
     _keybuf = malloc(sizeof(int) * (st.st_size+1));
@@ -108,10 +115,8 @@ int main(int argc, char **argv)
 
     close(fd);
     free(buf);
+    if(_nkeys > 0) _turbo |= TURBO_BASIC;
   } else _keybuf = _kb;
-
-  close(STDERR_FILENO);
-  open(".errors", O_WRONLY|O_CREAT|O_TRUNC, 0666);
 
   initmem();
   io_init();
@@ -122,9 +127,7 @@ int main(int argc, char **argv)
 
 void quit(void)
 {
-//   int mem = open("memory", O_WRONLY | O_CREAT | O_TRUNC, 0666);
-//   write(mem, _page[0x38]->ram, 0xFF);
-//   close(mem);
+  aqsnd_reset(); // prevent hang due to underrun
   SDL_Quit();
   exit(0);
 }

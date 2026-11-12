@@ -45,3 +45,4 @@
 210 END
 215 DATA hangman,dragons,dungeon,monster,amazing,science,fiction,stories
 220 DATA unknown,authors,section,machine,numbers,digital,program,chapter
+RUN

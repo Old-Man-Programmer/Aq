@@ -16,36 +16,29 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
+/****
+ * Sound driver for Mattel Aquarius.
+ * See top comment blocks in aqsnd.c for detailed documentation.
+ */
 #ifndef AQSND_H
 #define AQSND_H
 #include <stdint.h>
 
-/* Note:  this does not handle controllers */
-/* For controllers, write_f7 saves written values and read_f7 just returns */
-/* saved values.  For convenience, ports are initialized to 0xff (no press) */
-/*  R7, b7 = DDR B; b5 = DDR A (0 = in, 1 = out) */
-/*  R14 = Port A data; R15 = Port B data */
-/* I suggest that after aqsnd_{read,write}_f6, you call an equivalent
- * version for just the controller bits if read_f7 returns 14 or 15,
- * and just assume the DDR bits are always 0 */
-
-void aqsnd_reset(void); // call @ startup
-void aqsnd_write_fc(uint8_t val); // beeps and tapes
+void aqsnd_reset(void); // call @ startup & system reset
+void aqsnd_write_fc(uint8_t val); // beeps and tapes (just bit 0)
 uint8_t aqsnd_read_fc(void); // tapes
-void auto_end_tape(void);  // unset _is_tape if possible
 void aqsnd_write_f6(uint8_t val); // sound chip data
 uint8_t aqsnd_read_f6(void);
-void aqsnd_write_f7(uint8_t val); // sound chip addr
+void aqsnd_write_f7(uint8_t val); // sound chip addr (low 4 bits)
 uint8_t aqsnd_read_f7(void);
 
-extern int _is_tape; // true if currently reading/writing a tape (may turbo)
+// This needs to be called at least once per sound sample period (~10ms)
+// It is automatically called if sound registers are updated
+void aqsnd_process(void); // bring sound state up-to-date
 
-#define write_reg(r, v) \
-    aqsnd_write_f7(r); \
-    aqsnd_write_f6((uint8_t)(uint16_t)(v))
-#define write_reg16(r, v) \
-    write_reg(r, v); \
-    write_reg(r+1, (uint16_t)(v)>>8)
+// Even though you should do volume contol by other means, here's
+// a simple internal volume control.  Set to amount to attenuate generated
+// samples by (i.e. logarithmic vol control, 0 = max, 15 = off, 13 = min)
+extern int _vol_shift;
 
 #endif

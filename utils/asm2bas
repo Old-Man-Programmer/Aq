@@ -1,0 +1,29 @@
+#!/bin/sh
+
+p="${0%/*}"
+test "x$p" = "x$0" && p=.
+for x; do
+    case "$x" in
+      *.[aA][sS][mM]|*.as) ;;
+      *) for x in "$x".as "$x".[aA][sS][mM]; do
+            test -f "$x" && break
+         done ;;
+    esac
+
+    # Print initial comments
+    i=1
+    c=
+    while read -r a b; do
+       test ';' = "$a" || break
+       c="$c${i}PRINT\"$b\"\\
+"
+       i=$((i+1))
+    done <"$x"
+    
+    # Insert explicit additional BASIC commands
+    c="$c$(sed -n -e '/^;BASIC$/,${s/.//;s/$/\\/;p}' "$x" | tail -n +2)"
+    test -n "$c" &&
+       sed -i -e "/RUN/i \\
+$c
+" "${x%.*}".bas
+done

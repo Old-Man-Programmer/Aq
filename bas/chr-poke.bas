@@ -6,4 +6,4 @@
 40 POKE P+X,X
 50 NEXT X
 60 ?:?:?:?:?:?
-
+RUN

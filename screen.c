@@ -16,7 +16,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
 #include "Aq.h"
 
 /* Color codes:
@@ -68,6 +67,7 @@ uint32_t _colors[] = {
 static int _bordercolor, _cbgcolor = 0;
 int _xorigin, _yorigin, _screen_w, _screen_h, _border, _scale = 5;
 static int _texw, _texh;
+SDL_Window *_window;
 SDL_Renderer *_renderer;
 SDL_Texture *_texture;
 uint32_t *_screen;
@@ -116,12 +116,6 @@ void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg)
       pixels[x+(y*_texw)] = (*cbyte & cbit)? fg : bg;
     }
   }
-/*  
-  for(y=yo, cr = 0; cr < 8; y++, cr++, cbyte++) {
-    for(cbit = 128, x = xo; cbit; x++, (cbit>>=1)) {
-      putpixel(x, y, (*cbyte & cbit)? fg : bg);
-    }
-  }*/
 
   SDL_UnlockTexture(_texture);
 }
@@ -141,12 +135,6 @@ void fillrect(int x, int y, int width, int height, uint32_t bg)
       pixels[sx+(sy*_texw)] = bg;
     }
   }
-//   for(int sy=y; sy < y+height; sy++) {
-//     for(int sx=x; sx < x+width; sx++) {
-//       
-//       putpixel(sx, sy, bg);
-//     }
-//   }
   SDL_UnlockTexture(_texture);
 }
 
@@ -166,13 +154,13 @@ void screen_init(void)
   _texw = _screen_w+(_border*2);
   _texh = _screen_h+(_border*2);
 
-  SDL_Window *window = SDL_CreateWindow("Aquarius", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+  _window = SDL_CreateWindow("Aquarius", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                              _texw*_scale, _texh*_scale, SDL_WINDOW_RESIZABLE);
-  if (window == NULL) {
+  if (_window == NULL) {
     fprintf(stderr, "Couldn't get a window [%s]\n", SDL_GetError());
     exit(1);
   }
-  _renderer = SDL_CreateRenderer(window, -1, 0);
+  _renderer = SDL_CreateRenderer(_window, -1, 0);
   if (_renderer == NULL) {
     fprintf(stderr, "Couldn't get a renderer [%s]\n", SDL_GetError());
     exit(1);
@@ -193,58 +181,49 @@ void screen_init(void)
   SDL_UpdateTexture(_texture, NULL, _screen, _texw*sizeof(uint32_t));
 }
 
-uint8_t screen_reader(_U uint16_t addr, uint8_t *cell)
-{
-  return *cell;
-}
-
 #define SCREEN	0x3028
 #define COLOR	0x3428
 
-uint8_t screen_writer(uint16_t addr, uint8_t *cell, uint8_t data)
+uint8_t screen_border(uint16_t addr, uint8_t data)
 {
   uint32_t fg, bg;
-  int row, col;
-  uint8_t page = addr>>8, old;
-  int pos;
 
-  old = *cell;
-  if (old == data) return data;
-  *cell = data;
-  switch (addr) {
-    case 0x3400:
-      color(_bordercolor = data, &fg, &bg);
-      fillrect(0, 0, _screen_w+(_border*2), _screen_h+(_border*2), bg);
-      for(int r=0; r<24; r++) {
-	for(int c=0; c<40; c++) {
-	  pos = (r*40)+c;
-	  color(load(COLOR+pos), &fg, &bg);
-	  writechar(c,r,load(SCREEN+pos), fg, bg);
-	}
-      }
-      break;
-    case 0x3421:
-      _cbgcolor = data;
-      break;
-  }
-  if ((page >= 0x34) && (page < 0x38)) {
-    pos = addr - COLOR;
-    if (pos < 0) return data;
-    row = pos/40;
-    if (row < 0 || row > 23) return data;
-    col = (pos%40);
-    color(data, &fg, &bg);
-    writechar(col, row, load(addr-0x0400), fg, bg);
-  }
-  if (page >= 0x30 && page < 0x34) {
-    pos = addr - SCREEN;
-    if (pos < 0) return data;
-    row = pos/40;
-    if (row < 0 || row > 23) return data;
-    col = (pos%40);
-    color(load(addr+0x0400), &fg, &bg);
-    writechar(col, row, data, fg, bg);
+  if (_mem[addr] == data) return data;
+  _mem[addr] = data;
+  color(_bordercolor = data, &fg, &bg);
+  fillrect(0, 0, _screen_w+(_border*2), _screen_h+(_border*2), bg);
+  for(int r=0; r<24; r++) {
+    for(int c=0; c<40; c++) {
+      int pos = (r*40)+c;
+      color(load(COLOR+pos), &fg, &bg);
+      writechar(c,r,load(SCREEN+pos), fg, bg);
+    }
   }
   return data;
 }
 
+uint8_t screen_charscreen(uint16_t addr, uint8_t data)
+{
+  uint32_t fg, bg;
+
+  if (_mem[addr] == data) return data;
+  _mem[addr] = data;
+  int pos = addr - SCREEN;
+  int row = pos/40, col = (pos%40);
+  color(load(addr+0x0400), &fg, &bg);
+  writechar(col, row, data, fg, bg);
+  return data;
+}
+
+uint8_t screen_colorscreen(uint16_t addr, uint8_t data)
+{
+  uint32_t fg, bg;
+
+  if (_mem[addr] == data) return data;
+  _mem[addr] = data;
+  int pos = addr - COLOR;
+  int row = pos/40, col = (pos%40);
+  color(data, &fg, &bg);
+  writechar(col, row, load(addr-0x0400), fg, bg);
+  return data;
+}

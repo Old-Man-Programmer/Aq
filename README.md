@@ -4,9 +4,7 @@ This project is a console (Mattel | Radofin) *Aquarius* computer emulator.  It
 was created for nostalgia purposes, but also as potentially part of a larger
 and more proper open source emulator project.
 
-This version mostly just switching over to SDL2 rather than SDL1 and more
-keyboard work. Most of the work in the early versions was on getting basic
-functionality working and correctness.
+Changes in this version are shown in the CHANGES file.
 
 | | Command line options: |
 | :- | :- |
@@ -16,10 +14,21 @@ functionality working and correctness.
 | `-g` *ROMfile* | Load (game) ROM into ROM memory area on startup. |
 | `-t` *tapefile* | Sets tapefile as tape input.  Read when CLOAD is used. |
 | `-k` | Sets keyboard input mode to scan mode rather than timer mode. |
+| `-E` | Use special extended basic ROM (ebasic.bin) mapped at 0x2000 |
+| `-B` | Run programs in "batch" mode, i.e. run in turbo w/o a screen |
 
 Requirements:
 ncurses (w/ wide character support)
-SDL
+SDL2
 portaudio
 
 radofin.bin	- The BASIC ROM image for the Aquarius computer.
+
+
+asm/
+├── aquarius.mac - Aquarius assembly definitions and macros
+├── cam80-12/    - CamelForth for the Z80, ported to Aquarius
+├── eb/          - Disassembly of the Extended Basic ROM w/ modifications to
+│                  load at 0x2000
+├── exc/         - Zexall -- The Z80 exerciser ported to Aquarius
+└── sndtest/     - Some AY-3-8910/8912 sound testing programs

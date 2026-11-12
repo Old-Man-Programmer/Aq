@@ -16,7 +16,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +36,7 @@
 
 #define ROMS	"./roms/"
 
+#define K	1024
 #define CLKRATE	3579545 	/* clocks / second */
 #define VSCLKS	55840		/* 15.6ms * CLKRATE */
 #define VACTIVE	45780		/* Active scan period */
@@ -74,19 +74,19 @@ struct regset {
     };
     uint16_t HL;
   };
-};
-
-enum memflags {
-  MEM_RAM = 0,
-  MEM_USEROM = 1, MEM_USEREADER = 2, MEM_USEWRITER = 4, MEM_USEGAMEROM = 8
-};
-
-struct memory {
-  enum memflags flags;
-  uint8_t ram[256];
-  uint8_t *rom;
-  uint8_t (*reader)(uint16_t addr, uint8_t *cell);
-  uint8_t (*writer)(uint16_t addr, uint8_t *cell, uint8_t data);
+  union {
+    struct {
+      uint8_t IXl, IXh;
+    };
+    uint16_t IX;
+  };
+  union {
+    struct {
+      uint8_t IYl, IYh;
+    };
+    uint16_t IY;
+  };
+  uint16_t SP;
 };
 
 struct writelog {
@@ -109,18 +109,27 @@ extern FILE *_log, *_ilog;
 extern const char *_gamerom;
 extern const char *_tape;
 extern int *_keybuf, _nkeys;
+extern bool _extendedbasic, _batchmode;
 
 /* z80.c */
 void reset(void);
 extern unsigned long _totclk;
+extern unsigned int _turbo;
+/* reason flag for turbo: */
+#define TURBO_TAPE	1
+#define TURBO_BASIC	2
+#define TURBO_KEY	4
+#define TURBO_BATCH	8
 extern struct regset _reg;
 extern uint16_t _PC;
 
 /* mem.c */
+extern uint8_t _mem[64*K];
 uint8_t load(uint16_t addr);
 uint8_t store(uint16_t addr, uint8_t data);
 int initmem(void);
-extern struct memory *_page[256];
+// extern struct memory *_page[256];
+extern uint16_t _gameromstart;
 extern struct writelog _wlog[10];
 extern int _widx;
 
@@ -131,8 +140,10 @@ void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg);
 void fillrect(int x1, int y1, int x2, int y2, uint32_t bg);
 void screen_update(void);
 void screen_init(void);
-uint8_t screen_reader(uint16_t addr, uint8_t *cell);
-uint8_t screen_writer(uint16_t addr, uint8_t *cell, uint8_t data);
+uint8_t screen_border(uint16_t addr, uint8_t data);
+uint8_t screen_charscreen(uint16_t addr, uint8_t data);
+uint8_t screen_colorscreen(uint16_t addr, uint8_t data);
+extern SDL_Window *_window;
 extern int _scale;
 extern uint8_t *_cdata;
 
@@ -145,7 +156,7 @@ void io_write(uint8_t port, uint8_t top, uint8_t data);
 extern keymode_t _keymode;
 extern int _keydown;
 extern uint8_t _swlock_pattern;
-extern int _key, _ctrl, _shift;
+extern int _key, _ctrl, _shift, _capslk;
 
 /* aqjoy.c */
 uint8_t aqjoy_read(uint8_t port);

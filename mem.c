@@ -16,44 +16,16 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
 #include "Aq.h"
-
-struct memory *_page[256], **_basic;
 
 struct writelog _wlog[10];
 int _widx = 0;
 
-static uint8_t nomem_read(uint16_t addr, _U uint8_t *cell)
-{
-  return addr & 0xFF;
-}
+uint16_t _gameromstart = 0xFFFF;
 
-static uint8_t nomem_write(_U uint16_t addr, _U uint8_t *cell, _U uint8_t data)
-{
-  return 0;
-}
-
-uint8_t load(uint16_t addr)
-{
-  struct memory *p = _page[addr>>8];
-  int off = addr&0x00FF;
-  if (p->reader && (p->flags & MEM_USEREADER)) return p->reader(addr, &(p->ram[off]));
-  if (p->rom && (p->flags & MEM_USEROM)) return p->rom[off];
-  if (p->rom && (p->flags & MEM_USEGAMEROM)) return p->rom[off] ^ _swlock_pattern;
-  return p->ram[off];
-}
-
-uint8_t store(uint16_t addr, uint8_t data)
-{
-  struct memory *p = _page[addr>>8];
-  int off = addr&0x00FF;
-  _wlog[_widx].addr = addr;
-  _wlog[_widx++].data = data;
-  if (p->writer && (p->flags & MEM_USEWRITER)) return p->writer(addr, &(p->ram[off]), data);
-  p->ram[off] = data;
-  return data;
-}
+uint8_t _mem[64*K];
+uint8_t (*mem_reader[64*K])(uint16_t addr);
+uint8_t (*mem_writer[64*K])(uint16_t addr, uint8_t data);
 
 static uint8_t *loadrom(const char *file, off_t *size)
 {
@@ -75,15 +47,37 @@ static uint8_t *loadrom(const char *file, off_t *size)
   return rom;
 }
 
+inline uint8_t load(uint16_t addr)
+{
+  return _mem[addr];
+}
+
+inline uint8_t store(uint16_t addr, uint8_t data)
+{
+  return mem_writer[addr](addr, data);
+}
+
+
+uint8_t ram_writer(uint16_t addr, uint8_t data)
+{
+  return (_mem[addr] = data);
+}
+
+uint8_t rom_writer(uint16_t addr, uint8_t data)
+{
+  return _mem[addr];
+}
+
+// Too many magic numbers.  Should make #defines for them all.
 int initmem()
 {
   uint8_t *basic, *game;
-  int p, i;
+  int i;
   off_t size;
 
-  for(p=0;p < 256; p++) {
-    _page[p] = malloc(sizeof(struct memory));
-    memset(_page[p], 0, sizeof(struct memory));
+  memset(_mem, 0, sizeof(uint8_t)*64*K);
+  for(i=0; i < 64*K; i++) {
+    mem_writer[i] = ram_writer;
   }
 
   _cdata = loadrom(ROMS "Aquarius-chars.rom", &size);
@@ -98,9 +92,20 @@ int initmem()
     fprintf(stderr,"Unable to open ROM file %s [%s]\n", ROMS "radofin.bin", strerror(errno));
     exit(1);
   }
-  for(i=0, p = 0x00; i < size; p++, i+= 256) {
-    _page[p]->rom = basic+i;
-    _page[p]->flags = MEM_USEROM;
+  memcpy(_mem+0x0000, basic, size);
+//   for(i=0; i < size; i++) {
+//     mem_writer[i+0x0000] = rom_writer;
+//   }
+  if (_extendedbasic) {
+    basic = loadrom(ROMS "ebasic.bin", &size);
+    if (basic == NULL) {
+      fprintf(stderr,"Unable to open ROM file %s [%s]\n", ROMS "ebasic.bin", strerror(errno));
+      exit(1);
+    }
+    memcpy(_mem+0x2000, basic, size);
+    for(int i=0; i < size; i++) {
+      mem_writer[i+0x2000] = rom_writer;
+    }
   }
 
   if (_gamerom) {
@@ -110,9 +115,10 @@ int initmem()
       game = loadrom(path, &size);
     }
     if (game) {
-      for(i=0, p = 0xFF-((size-1)/256); i < size; p++, i+= 256) {
-	_page[p]->rom = game+i;
-	_page[p]->flags = MEM_USEGAMEROM;
+      _gameromstart = 0xFFFF-(size-1);
+      memcpy(_mem+_gameromstart, game, size);
+      for(i=0; i < size; i++) {
+	mem_writer[i+_gameromstart] = rom_writer;
       }
     } else {
       fprintf(stderr,"Unable to open game ROM [%s]\n", strerror(errno));
@@ -122,11 +128,14 @@ int initmem()
 
   /* Map I/O devices */
   /* Screen */
-  for(p=0x30; p < 0x38; p++) {
-    _page[p]->writer = screen_writer;
-    _page[p]->flags = MEM_USEWRITER;
+  if (!_batchmode) {
+    mem_writer[0x3400] = screen_border;
+    for(i=0; i < (40*24); i++) {
+      mem_writer[0x3028+i] = screen_charscreen;
+      mem_writer[0x3428+i] = screen_colorscreen;
+    }
+    screen_init();
   }
-  screen_init();
 
   return 0;
 }

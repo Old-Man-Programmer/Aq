@@ -16,13 +16,14 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
 #include "Aq.h"
 #include "instr.h"
 
 struct regset _reg, _alt;
 
 unsigned long _totclk = 0;
+
+unsigned int _turbo = 0;
 
 uint8_t _I, _R, _IFF1, _IFF2;	// Interrupt / Memory Refresh / Interrupt flip-flops 1 and 2
 uint16_t _IX, _IY;	// Index registers
@@ -33,6 +34,8 @@ uint8_t _IR;	// Instruction register (not z80)
 
 enum {
   F_S = 128, F_Z = 64, F_Y = 32, F_H = 16, F_X = 8, F_PV = 4, F_N = 2, F_C = 1,
+  F_SXY = 0xA8, F_XY=0x28,
+  BIT_S=7, BIT_Z=6, BIT_Y=5, BIT_H=4, BIT_X=3, BIT_PV=2, BIT_N=1, BIT_C=0,
   F_SIGN = 128, F_ZERO = 64, F_HALFCARRY = 16, F_PARITY = 4, F_ADDSUB = 2, F_CARRY = 1
 };
 
@@ -82,13 +85,15 @@ static uint16_t immediate_addr(void)
 
 static int LDX(int dir)
 {
-  store(_reg.DE, load(_reg.HL));
+  uint8_t n;
+  store(_reg.DE, n = load(_reg.HL));
+  n += _reg.A;
   _reg.DE+=dir;
   _reg.HL+=dir;
   _reg.BC--;
 
-  _reg.F &= ~(F_H | F_N | F_PV);
-  _reg.F |= (_reg.BC == 0? 0 : F_PV);
+  _reg.F &= ~(F_H | F_N | F_PV | F_XY);
+  _reg.F |= (_reg.BC == 0? 0 : F_PV) | (n&F_X) | (n&0x02?F_Y:0);
 
   return 16;
 }
@@ -104,8 +109,10 @@ static int CPX(int dir)
   _reg.HL += dir;
   _reg.BC--;
 
-  _reg.F = (n&0x80?F_S:0) | (n==0?F_Z:0) | (borrow&0x08?F_H:0) |
+  _reg.F = (n&F_S) | (n==0?F_Z:0) | (borrow&F_H) |
     (_reg.BC?F_PV:0) | F_N | (_reg.F&F_C);
+  n -= _reg.F&F_H? 1 : 0;
+  _reg.F |= (n&0x02?F_Y:0) | (n&F_X);
 
   return 16;
 }
@@ -113,11 +120,11 @@ static int CPX(int dir)
 static void ADD(uint8_t V)
 {
   uint16_t value = (int16_t)_reg.A + (int16_t)V;
-  int overflow = ((_reg.A&0x80) != (V&0x80)) && ((value&0x80) != (_reg.A&0x80));
+  int overflow = ((_reg.A&0x80) == (V&0x80)) && ((value&0x80) != (_reg.A&0x80));
   uint8_t cadd = _reg.A ^ V;
   _reg.A = value;
   uint8_t carry = _reg.A ^ cadd;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | (carry&0x10?F_H:0) |
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | (carry&F_H) |
     (overflow?F_PV:0) | (value&0x100?F_C:0);
 }
 
@@ -125,8 +132,8 @@ static uint16_t ADD16(uint16_t R, uint16_t V)
 {
   uint32_t value = (int32_t)R + (int32_t)V;
   uint16_t cadd = R ^ V;
-  uint16_t carry = R ^ cadd;
-  _reg.F = (_reg.F & (F_S | F_Z | F_PV)) | (carry&0x10000?F_H:0) | (value>0xFFFF?F_C:0);
+  uint16_t carry = value ^ cadd;
+  _reg.F = (_reg.F & (F_S | F_Z | F_PV)) | ((value>>8)&F_XY) | (carry&0x1000?F_H:0) | (value>0xFFFF?F_C:0);
   return value;
 }
 
@@ -134,11 +141,11 @@ static void ADC(uint8_t V)
 {
   uint8_t c = (_reg.F&F_C? 1 : 0);
   uint16_t value = (int16_t)_reg.A + (int16_t)V + c;
-  int overflow = ((_reg.A&0x80) != (V&0x80)) && ((value&0x80) != (_reg.A&0x80));
+  int overflow = ((_reg.A&0x80) == (V&0x80)) && ((value&0x80) != (_reg.A&0x80));
   uint8_t cadd = _reg.A ^ V ^ c;
   _reg.A = value;
   uint8_t carry = _reg.A ^ cadd;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | (carry&0x10?F_H:0) |
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | (carry&F_H) |
     (overflow?F_PV:0) | (value&0x100?F_C:0);
 }
 
@@ -146,10 +153,11 @@ static uint16_t ADC16(uint16_t R, uint16_t V)
 {
   uint16_t c = (_reg.F&F_C? 1 : 0);
   uint32_t value = (int32_t)R + (int32_t)V + c;
-  int overflow = ((R&0x8000) != (V&0x8000)) && ((value&0x8000) != (R&0x8000));
+  int overflow = ((R&0x8000) == (V&0x8000)) && ((value&0x8000) != (R&0x8000));
   uint16_t cadd = R ^ V ^ c;
-  uint16_t carry = V ^ cadd;
-  _reg.F = (value&0x8000?F_S:0) | (value==0?F_Z:0) | (carry&0x1000?F_H:0) |
+  uint16_t carry = value ^ cadd;
+
+  _reg.F = ((value>>8)&F_SXY) | (value==0?F_Z:0) | (carry&0x1000?F_H:0) |
     (overflow?F_PV:0) | (value&0x10000?F_C:0);
   return value;
 }
@@ -162,7 +170,7 @@ static void SUB(uint8_t V)
   int b9 = (int)V > (int)_reg.A;
   _reg.A -= V;
   uint8_t borrow = _reg.A ^ csub;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | (borrow&0x08?F_H:0) |
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | (borrow&F_H) |
     (overflow?F_PV:0) | F_N | (b9?F_C:0);
 }
 
@@ -175,7 +183,7 @@ static void SBC(uint8_t V)
   int b9 = ((int)V+c) > (int)_reg.A;
   _reg.A = _reg.A - V - c;
   uint8_t borrow = _reg.A ^ csub;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | (borrow&0x08?F_H:0) |
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | (borrow&F_H) |
     (overflow?F_PV:0) | F_N | (b9?F_C:0);
 }
 
@@ -187,8 +195,8 @@ static uint16_t SBC16(uint16_t R, uint16_t V)
   int b17 = ((int)V+c) > (int)R;
   uint16_t csub = R ^ V ^ c;
   uint16_t borrow = value ^ csub;
-  _reg.F = (value&0x8000?F_S:0) | (value==0?F_Z:0) | (borrow&0x0800?F_H:0) |
-    (overflow?F_PV:0) | F_N | (b17?F_C:0);
+  _reg.F = ((value>>8)&F_SXY) | (value==0?F_Z:0) | (borrow&0x1000?F_H:0) |
+     (overflow?F_PV:0) | F_N | (b17?F_C:0);
   return value;
 }
 
@@ -224,8 +232,8 @@ static uint8_t DAA(void)
   uint8_t add = 0, flags = 0;
   int ch = (_reg.F& F_N? 4: 0) | (_reg.F & F_C? 2 : 0) | (_reg.F & F_H? 1 : 0);
   int h = (_reg.A>>4)&0x0F, l = _reg.A & 0x0F;
-  _reg.F &= ~F_C;
 
+#if 0
   switch(ch) {
   // Addition:
     case 0:
@@ -262,54 +270,132 @@ static uint8_t DAA(void)
       break;
   }
   _reg.A += add;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | parity(_reg.A) | flags | (_reg.F&F_N);
+#else
+/* "updated" table: */
+/*
+C h   H l   diff
+0 0-9 0 0-9 00
+0 0-9 1 0-9 06
+0 0-8 * a-f 06
+0 a-f 0 0-9 60
+1  *  0 0-9 60
+1  *  1 0-9 66
+1  *  * a-f 66
+0 9-f * a-f 66
+0 a-f 1 0-9 66
+ */
+  switch(ch&3) {
+    case 0:
+/*
+C h   H l   diff
+0 0-9 0 0-9 00
+0 0-8 * a-f 06
+0 a-f 0 0-9 60
+0 9-f * a-f 66
+ */
+      add = l > 9 ? 6 : 0;
+      if(h > 9 || (h == 9 && l > 9))
+	  add += 0x60;
+      break;
+    case 1:
+/*
+C h   H l   diff
+0 0-9 1 0-9 06
+0 0-8 * a-f 06
+0 9-f * a-f 66
+0 a-f 1 0-9 66
+ */
+      add = 0x06;
+      if(h > 9 || (h == 9 && l > 9))
+	add += 0x60;
+      break;
+    case 2:
+/*
+C h   H l   diff
+1  *  0 0-9 60
+1  *  * a-f 66
+ */
+      add = l > 9 ? 0x66 : 0x60;
+      break;
+    case 3:
+/*
+C h   H l   diff
+1  *  1 0-9 66
+1  *  * a-f 66
+ */
+      add = 0x66;
+      break;
+  }
+  _reg.A += (_reg.F&F_N ? -add : add);
+/*
+C h   l   C'
+0 0-9 0-9 0
+0 0-8 a-f 0
+0 9-f a-f 1
+0 a-f 0-9 1
+1 *   *   1
+*/
+    flags = _reg.F&F_C ? F_C : h > 9 ? F_C : h == 9 && l > 9 ? F_C : 0;
+/*
+N H l   H'
+0 * 0-9 0
+0 * a-f 1
+1 0 *   0
+1 1 6-f 0
+1 1 0-5 1
+*/
+    if(_reg.F&F_N)
+      flags |= l < 6 && (_reg.F&F_H) ? F_H : 0;
+    else
+      flags |= l > 9 ? F_H : 0;
+#endif
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | parity(_reg.A) | flags | (_reg.F&F_N);
   return 4;
 }
 
 static void AND(uint8_t V)
 {
   _reg.A &= V;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | F_H | parity(_reg.A);
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | F_H | parity(_reg.A);
 }
 
 static void OR(uint8_t V)
 {
   _reg.A |= V;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | parity(_reg.A);
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | parity(_reg.A);
 }
 
 static void XOR(uint8_t V)
 {
   _reg.A ^= V;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) | parity(_reg.A);
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) | parity(_reg.A);
 }
 
 static void CP(uint8_t V)
 {
-  uint8_t csub = _reg.A ^ V;
-//  uint16_t value = (int8_t)_reg.A - (int8_t)V;
   uint16_t value = (int8_t)_reg.A - (int8_t)V;
   int overflow = ((_reg.A&0x80) != (V&0x80)) && ((value&0x80) != (_reg.A&0x80));
-  int borrow = value ^ csub;
+  uint8_t csub = _reg.A ^ V;
   int b9 = (int)V > (int)_reg.A;
-  _reg.F = (value&0x80?F_S:0) | (value==0?F_Z:0) |
-    (borrow&0x08?F_H:0) | (overflow?F_PV:0) | F_N | (b9?F_C:0);
+  uint8_t borrow = (uint8_t)value ^ csub;
+  _reg.F = (value&F_S) | (V&F_XY) | (value==0?F_Z:0) |
+    (borrow&F_H) | (overflow?F_PV:0) | F_N | (b9?F_C:0);
 }
 
 static uint8_t INC(uint8_t a)
 {
   uint8_t cadd = a ^ 1, b = a+1;
   uint8_t carry = b ^ cadd;
-  _reg.F = (b&0x80?F_S:0) | (b==0?F_Z:0) | (carry&0x10?F_H:0) | (a==0x7F?F_PV:0) |
+  _reg.F = (b&F_SXY) | (b==0?F_Z:0) | (carry&F_H) | (a==0x7F?F_PV:0) |
     (_reg.F&F_C);
   return b;
 }
 
 static uint8_t DEC(uint8_t a)
 {
-  uint8_t csub = a ^ (uint8_t)-1, b = a-1;
+  uint8_t csub = a ^ 1, b = a-1;
   uint8_t borrow = b ^ csub;
-  _reg.F = (b&0x80?F_S:0) | (b==0?F_Z:0) | (borrow&0x08?F_H:0) | (a==0x80?F_PV:0) |
+  _reg.F = (b&F_SXY) | (b==0?F_Z:0) | (borrow&F_H) | (a==0x80?F_PV:0) |
      F_N | (_reg.F&F_C);
   return b;
 }
@@ -319,8 +405,8 @@ static int NEG(void)
   int acc = _reg.A;
   _reg.A = 0 - _reg.A;
   uint8_t borrow = _reg.A ^ acc;
-  _reg.F = (_reg.A&0x80?F_S:0) | (_reg.A==0?F_Z:0) |
-    (borrow&0x08?F_H:0) | (acc==0x80?F_PV:0) | F_N | (acc?F_C:0);
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0?F_Z:0) |
+    (borrow&F_H) | (acc==0x80?F_PV:0) | F_N | (acc?F_C:0);
   return 8;
 }
 
@@ -328,7 +414,7 @@ static uint8_t RLC(uint8_t r)
 {
   int n = r&0x80;
   r = (r<<1) | (n? 1: 0);
-  _reg.F = (r&0x80? F_S:0) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
   return r;
 }
 
@@ -336,7 +422,7 @@ static uint8_t RL(uint8_t r)
 {
   int n = r&0x80;
   r = (r<<1) | (_reg.F&F_C? 1: 0);
-  _reg.F = (r&0x80? F_S:0) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
   return r;
 }
 
@@ -344,7 +430,7 @@ static uint8_t RRC(uint8_t r)
 {
   int n = r&0x01;
   r = (r>>1) | (n? 0x80: 0);
-  _reg.F = (r&0x80? F_S:0) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
   return r;
 }
 
@@ -352,7 +438,7 @@ static uint8_t RR(uint8_t r)
 {
   int n = r&0x01;
   r = (r>>1) | (_reg.F&F_C? 0x80: 0);
-  _reg.F = (r&0x80? F_S:0) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
   return r;
 }
 
@@ -360,7 +446,15 @@ static uint8_t SLA(uint8_t r)
 {
   int n = r&0x80;
   r <<= 1;
-  _reg.F = (r&0x80? F_S:0) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  return r;
+}
+
+static uint8_t SLL(uint8_t r)
+{
+  int n = r&0x80;
+  r = (r<<1) | 1;
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
   return r;
 }
 
@@ -368,7 +462,7 @@ static uint8_t SRA(uint8_t r)
 {
   int n = r&0x01;
   r = ((int8_t)r >> 1);
-  _reg.F = (r&0x80? F_S:0) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
   return r;
 }
 
@@ -376,16 +470,16 @@ static uint8_t SRL(uint8_t r)
 {
   int n = r&0x01;
   r >>= 1;
-  _reg.F = (r==0? F_Z:0) | parity(r) | (n? F_C:0);
+  _reg.F = (r&F_SXY) | (r==0? F_Z:0) | parity(r) | (n? F_C:0);
   return r;
 }
 
 static uint8_t RLD(uint8_t r)
 {
-  uint8_t h = (r&0xF0)>>4;
+  uint8_t h = (r>>4)&0x0F;
   r = r<<4 | (_reg.A&0x0F);
   _reg.A = (_reg.A&0xF0) | h;
-  _reg.F = (_reg.A&0x80? F_S:0) | (_reg.A==0? F_Z:0) | parity(_reg.A) | (_reg.F&F_C);
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0? F_Z:0) | parity(_reg.A) | (_reg.F&F_C);
   return r;
 }
 
@@ -394,17 +488,15 @@ static uint8_t RRD(uint8_t r)
   uint8_t l = (r&0x0F);
   r = (_reg.A&0x0F)<<4 | r>>4;
   _reg.A = (_reg.A&0xF0) | l;
-  _reg.F = (_reg.A&0x80? F_S:0) | (_reg.A==0? F_Z:0) | parity(_reg.A) | (_reg.F&F_C);
+  _reg.F = (_reg.A&F_SXY) | (_reg.A==0? F_Z:0) | parity(_reg.A) | (_reg.F&F_C);
   return r;
 }
 
-static int BIT(uint8_t b, uint8_t r)
+static void BIT(uint8_t b, uint8_t r)
 {
-  _reg.F &= ~(F_Z | F_N | F_S | F_PV);
-  _reg.F |= ((r&(1<<b))?0:F_Z|F_PV) | ((b==7&&(r&0x80))?F_S:0) | F_H;
-//   _reg.F &= ~(F_Z | F_N);
-//   _reg.F |= ((r&(1<<b))?0:F_Z) | F_H;
-  return 2;
+  _reg.F &= ~(F_Z | F_N | F_SXY | F_PV);
+  int set = r&(1<<b);
+  _reg.F |= (set?0:F_Z|F_PV) | (set & F_S) | (r & F_XY) | F_H;
 }
 
 static int CALL(uint16_t addr)
@@ -424,7 +516,7 @@ static int RET(void)
 
 static uint8_t IO(uint8_t v)
 {
-  _reg.F = (v&0x80?F_S:0) | (v==0?F_Z:0) | parity(v) | (_reg.F&F_C);
+  _reg.F = (v&F_SXY) | (v==0?F_Z:0) | parity(v) | (_reg.F&F_C);
   return v;
 }
 
@@ -434,7 +526,7 @@ static int INX(int dir)
   store(_reg.HL, n = io_read(_reg.C, _reg.B--));
   _reg.HL += dir;
   _reg.F &= ~(F_Z|F_S);
-  _reg.F |= (_reg.B&0x80?F_S:0) | (_reg.B==0?F_Z:0) | F_N;
+  _reg.F |= (_reg.B&F_SXY) | (_reg.B==0?F_Z:0) | F_N;
   if ((_reg.C+dir+n) > 255) _reg.F |= (F_C|F_H);
   return 16;
 }
@@ -446,11 +538,9 @@ static int OUTX(int dir)
   _reg.HL += dir;
 
   _reg.F &= ~(F_Z|F_S|F_N);
-  _reg.F |= (_reg.B&0x80?F_S:0) | (_reg.B == 0? F_Z: 0) | (n&0x80?F_N:0);
+  _reg.F |= (_reg.B&F_SXY) | (_reg.B == 0? F_Z: 0) | (n&0x80?F_N:0);
   if ((_reg.L+n) > 255) _reg.F |= (F_C|F_H);
 
-//   _reg.F &= ~F_Z;
-//   _reg.F |= (_reg.B == 0? F_Z: 0) | F_N;
   return 16;
 }
 
@@ -472,6 +562,11 @@ static void pinstr(uint16_t PC, int pfx, uint8_t d, const char *instr)
   uint16_t addr;
 
   if (instr == NULL) return;
+#if 0
+  fprintf(_log,"a%02Xf%sbc%04X(%02X)de%04X(%02X)hl%04X(%02X%02X)ix%04Xiy%04X ",
+	  _reg.A, status(_reg.F), _reg.BC, load(_reg.BC), _reg.DE, load(_reg.DE),
+	  _reg.HL, load(_reg.HL+1),load(_reg.HL), _reg.IX, _reg.IY);
+#endif
   if (pfx) fprintf(_log, "%04X %X %02X:", PC, pfx, _IR);
   else fprintf(_log, "%04X %02X:", PC, _IR);
   for(int i=0; instr[i]; i++) {
@@ -558,17 +653,11 @@ static void run()
 	cycles = 16;
 	break;
       case 0x0A:	// LD A,(BC)
-	_reg.A = load(_reg.BC);
-	cycles = 7;
-	break;
+	_reg.A = load(_reg.BC);	cycles = 7; break;
       case 0x1A:	// LD A,(DE)
-	_reg.A = load(_reg.DE);
-	cycles = 7;
-	break;
+	_reg.A = load(_reg.DE);	cycles = 7; break;
       case 0x7E:	// LD A,(HL)
-	_reg.A = load(_reg.HL);
-	cycles = 7;
-	break;
+	_reg.A = load(_reg.HL);	cycles = 7; break;
       case 0x3A:	// LD A,(nn)
 	_reg.A = load(immediate_addr());
 	cycles = 13;
@@ -810,19 +899,6 @@ static void run()
 	AND(load(_reg.HL));
 	cycles = 7;
 	break;
-      case 0xB0 ... 0xB5:	// OR r
-      case 0xB7:
-	OR(reg8(_IR&0x07));
-	cycles = 4;
-	break;
-      case 0xF6:	// OR n
-	OR(immediate_value());
-	cycles = 7;
-	break;
-      case 0xB6:	// OR (HL)
-	OR(load(_reg.HL));
-	cycles = 7;
-	break;
       case 0xA8 ... 0xAD:	// XOR r
       case 0xAF:
 	XOR(reg8(_IR&0x07));
@@ -834,6 +910,19 @@ static void run()
 	break;
       case 0xAE:	// XOR (HL)
 	XOR(load(_reg.HL));
+	cycles = 7;
+	break;
+      case 0xB0 ... 0xB5:	// OR r
+      case 0xB7:
+	OR(reg8(_IR&0x07));
+	cycles = 4;
+	break;
+      case 0xF6:	// OR n
+	OR(immediate_value());
+	cycles = 7;
+	break;
+      case 0xB6:	// OR (HL)
+	OR(load(_reg.HL));
 	cycles = 7;
 	break;
       case 0xB8 ... 0xBD:	// CP r
@@ -882,16 +971,16 @@ static void run()
 	store(_reg.HL, DEC(load(_reg.HL))); cycles = 11; break;
 
       case 0x2F:	// CPL
-	_reg.A = ~_reg.A; _reg.F |= (F_H | F_N);
+	_reg.A = ~_reg.A; _reg.F = (_reg.F&(F_S|F_Z|F_PV|F_C)) | (_reg.A&F_XY) | (F_H | F_N);
 	cycles = 4;
 	break;
       case 0x3F:	// CCF
 	h = _reg.F&F_C?F_H:0;
-	_reg.F ^= F_C; _reg.F &= ~(F_N|F_H); _reg.F |= h;
+	_reg.F ^= F_C; _reg.F &= ~(F_N|F_H|F_XY); _reg.F |= h | (_reg.A&F_XY);
 	cycles = 4;
 	break;
       case 0x37:	// SCF
-	_reg.F &= ~(F_H|F_N); _reg.F |= F_C;
+	_reg.F &= ~(F_H|F_N|F_XY); _reg.F |= F_C | (_reg.A&F_XY);
 	cycles = 4;
 	break;
       case 0x09:	// ADD HL,BC
@@ -926,26 +1015,28 @@ static void run()
 
       case 0x07:	// RCLA
 	n = _reg.A&0x80;
-	_reg.F &= (F_S | F_Z | F_PV); _reg.F |= (n? F_C : 0);
 	_reg.A = (_reg.A << 1) | (n? 1 : 0);
+	_reg.F &= (F_S | F_Z | F_PV | F_XY); _reg.F |= (n? F_C : 0) | (_reg.A&F_XY);
 	cycles = 4;
 	break;
       case 0x17:	// RLA
 	n = _reg.F&F_C;
 	_reg.F &= (F_S | F_Z | F_PV); _reg.F |= (_reg.A&0x80? F_C : 0);
 	_reg.A = (_reg.A << 1) | (n? 1 : 0);
+	_reg.F |= _reg.A & F_XY;
 	cycles = 4;
 	break;
       case 0x0F:	// RRCA
 	n = _reg.A&0x01;
-	_reg.F &= (F_S | F_Z | F_PV); _reg.F |= (n? F_C : 0);
 	_reg.A = (_reg.A >> 1) | (n? 0x80 : 0);
+	_reg.F &= (F_S | F_Z | F_PV); _reg.F |= (n? F_C : 0) | (_reg.A&F_XY);
 	cycles = 4;
 	break;
       case 0x1F:	// RRA
 	n = _reg.F&F_C;
 	_reg.F &= (F_S | F_Z | F_PV); _reg.F |= (_reg.A&0x01? F_C : 0);
 	_reg.A = (_reg.A >> 1) | (n? 0x80 : 0);
+	_reg.F |= _reg.A & F_XY;
 	cycles = 4;
 	break;
       case 0xC3:	// JP nn
@@ -1165,10 +1256,10 @@ static void run()
 	    _reg.D = RR(_reg.D); cycles = 8; break;
 	  case 0x1B:	// RR E
 	    _reg.E = RR(_reg.E); cycles = 8; break;
-	  case 0x1C:	// RR L
-	    _reg.L = RR(_reg.L); cycles = 8; break;
-	  case 0x1D:	// RR H
+	  case 0x1C:	// RR H
 	    _reg.H = RR(_reg.H); cycles = 8; break;
+	  case 0x1D:	// RR L
+	    _reg.L = RR(_reg.L); cycles = 8; break;
 	  case 0x1E:	// RR (HL)
 	    store(_reg.HL, RR(load(_reg.HL))); cycles = 15; break;
 	  case 0x1F:	// RR A
@@ -1208,6 +1299,23 @@ static void run()
 	  case 0x2F:	// SRA A
 	    _reg.A = SRA(_reg.A); cycles = 8; break;
 
+	  case 0x30:	// SLL B
+	    _reg.B = SLL(_reg.B); cycles = 8; break;
+	  case 0x31:	// SLL C
+	    _reg.C = SLL(_reg.C); cycles = 8; break;
+	  case 0x32:	// SLL D
+	    _reg.D = SLL(_reg.D); cycles = 8; break;
+	  case 0x33:	// SLL E
+	    _reg.E = SLL(_reg.E); cycles = 8; break;
+	  case 0x34:	// SLL H
+	    _reg.H = SLL(_reg.H); cycles = 8; break;
+	  case 0x35:	// SLL L
+	    _reg.L = SLL(_reg.L); cycles = 8; break;
+	  case 0x36:	// SLL (HL)
+	    store(_reg.HL, SLL(load(_reg.HL))); cycles = 15; break;
+	  case 0x37:	// SLL A
+	    _reg.A = SLL(_reg.A); cycles = 8; break;
+
 	  case 0x38:	// SRL B
 	    _reg.B = SRL(_reg.B); cycles = 8; break;
 	  case 0x39:	// SRL C
@@ -1226,6 +1334,8 @@ static void run()
 	    _reg.A = SRL(_reg.A); cycles = 8; break;
 	  case 0x40 ... 0x7F:	// BIT b,r / BIT b,(HL)
 	    BIT((_IR>>3)&0x07, reg8(_IR&0x07));
+	    if((_IR&0x07)==6)
+	      _reg.F &= ~F_XY;
 	    cycles = 8 + ((_IR&0x07)==6?4:0); break;
 	  case 0xC0 ... 0xFF:	// SET b,r / SET b,(HL)
 	    h = (_IR>>3)&0x07; l = _IR&0x07;
@@ -1253,130 +1363,134 @@ static void run()
 	switch(_IR) {
 	  case 0x36:	// LD (IX+o),n
 	    o = immediate_value();
-	    store(_IX+(int8_t)o, immediate_value());
+	    store(_reg.IX+(int8_t)o, immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x70 ... 0x75:	// LD (IX+o),r
 	  case 0x77:
-	    store(_IX+(int8_t)immediate_value(), reg8(_IR&7));
+	    store(_reg.IX+(int8_t)immediate_value(), reg8(_IR&7));
 	    cycles = 19;
 	    break;
 	  case 0x22:	// LD (nn),IX
 	    addr = immediate_addr();
-	    store(addr, _IX & 0xFF);
-	    store(addr+1, _IX>>8);
+	    store(addr,   _reg.IXl);
+	    store(addr+1, _reg.IXh);
 	    cycles = 20;
 	    break;
 	  case 0x7E:	// LD A,(IX+o)
-	    _reg.A = load(_IX + (int8_t)immediate_value());
+	    _reg.A = load(_reg.IX + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x46:	// LD B,(IX+o)
-	    _reg.B = load(_IX + (int8_t)immediate_value());
+	    _reg.B = load(_reg.IX + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x4E:	// LD C,(IX+o)
-	    _reg.C = load(_IX + (int8_t)immediate_value());
+	    _reg.C = load(_reg.IX + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x56:	// LD D,(IX+o)
-	    _reg.D = load(_IX + (int8_t)immediate_value());
+	    _reg.D = load(_reg.IX + (int8_t)immediate_value());
+	    cycles = 19;
+	    break;
+	  case 0x5E:	// LD E,(IX+o)
+	    _reg.E = load(_reg.IX + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x66:	// LD H,(IX+o)
-	    _reg.H = load(_IX + (int8_t)immediate_value());
+	    _reg.H = load(_reg.IX + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x6E:	// LD L,(IX+o)
-	    _reg.L = load(_IX + (int8_t)immediate_value());
+	    _reg.L = load(_reg.IX + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x2A:	// LD IX,(nn)
 	    addr = immediate_addr();
-	    _IX = load(addr) | (load(addr+1)<<8);
+	    _reg.IX = load(addr) | (load(addr+1)<<8);
 	    cycles = 20;
 	    break;
 	  case 0x21:	// LD IX,nn
-	    _IX = immediate_addr();
+	    _reg.IX = immediate_addr();
 	    cycles = 14;
 	    break;
 	  case 0xF9:	// LD SP,IX
-	    _SP = _IX;
+	    _SP = _reg.IX;
 	    cycles = 10;
 	    break;
 	  case 0xE1:	// POP IX
-	    _IX = load(_SP++);
-	    _IX |= load(_SP++)<<8;
+	    _reg.IXl = load(_SP++);
+	    _reg.IXh = load(_SP++);
 	    cycles = 14;
 	    break;
 	  case 0xE5:	// PUSH IX
-	    store(--_SP, _IX>>8);
-	    store(--_SP, _IX & 0xFF);
+	    store(--_SP, _reg.IXh);
+	    store(--_SP, _reg.IXl);
 	    cycles = 14;
 	    break;
 	  case 0xE3:	// EX (SP),IX
-	    l = load(_SP);   store(_SP, _IX & 0xFF);
-	    h = load(_SP+1); store(_SP+1, _IX >> 8);
-	    _IX = (h<<8) | l;
+	    l = load(_SP);   store(_SP,   _reg.IXl);
+	    h = load(_SP+1); store(_SP+1, _reg.IXh);
+	    _reg.IX = (h<<8) | l;
 	    cycles = 23;
 	    break;
 	  case 0x86:	// ADD A,(IX+o)
-	    ADD(load(_IX+(int8_t)immediate_value()));
+	    ADD(load(_reg.IX+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x8E:	// ADC A,(IX+o)
-	    ADC(load(_IX+(int8_t)immediate_value()));
+	    ADC(load(_reg.IX+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x96:	// SUB (IX+o)
-	    SUB(load(_IX+(int8_t)immediate_value()));
+	    SUB(load(_reg.IX+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x9E:	// SBC A,(IX+o)
-	    SBC(load(_IX+(int8_t)immediate_value()));
+	    SBC(load(_reg.IX+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0xA6:	// AND (IX+o)
-	    AND(load(_IX+(int8_t)immediate_value()));
-	    cycles = 19;
-	    break;
-	  case 0xB6:	// OR (IX+o)
-	    OR(load(_IX+(int8_t)immediate_value()));
+	    AND(load(_reg.IX+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0xAE:	// XOR (IX+o)
-	    XOR(load(_IX+(int8_t)immediate_value()));
+	    XOR(load(_reg.IX+(int8_t)immediate_value()));
+	    cycles = 19;
+	    break;
+	  case 0xB6:	// OR (IX+o)
+	    OR(load(_reg.IX+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0xBE:	// CP (IX+o)
-	    CP(load(_IX+(int8_t)immediate_value()));
+	    CP(load(_reg.IX+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x34:	// INC (IX+o)
-	    addr = _IX+(int8_t)immediate_value();
+	    addr = _reg.IX+(int8_t)immediate_value();
 	    store(addr, INC(load(addr)));
 	    cycles = 23;
 	    break;
 	  case 0x35:	// DEC (IX+o)
-	    addr = _IX+(int8_t)immediate_value();
+	    addr = _reg.IX+(int8_t)immediate_value();
 	    store(addr, DEC(load(addr)));
 	    cycles = 23;
 	    break;
 	  case 0x09:	// ADD IX, BC
-	    _IX = ADD16(_IX, _reg.BC); cycles = 15; break;
+	    _reg.IX = ADD16(_reg.IX, _reg.BC); cycles = 15; break;
 	  case 0x19:	// ADD IX, DE
-	    _IX = ADD16(_IX, _reg.DE); cycles = 15; break;
+	    _reg.IX = ADD16(_reg.IX, _reg.DE); cycles = 15; break;
 	  case 0x29:	// ADD IX, IX
-	    _IX = ADD16(_IX, _IX);     cycles = 15; break;
+	    _reg.IX = ADD16(_reg.IX, _reg.IX); cycles = 15; break;
 	  case 0x39:	// ADD IX, SP
-	    _IX = ADD16(_IX, _SP);     cycles = 15; break;
+	    _reg.IX = ADD16(_reg.IX, _SP);     cycles = 15; break;
 
 	  case 0x23:	// INC IX
-	    _IX++; cycles = 10; break;
+	    _reg.IX++; cycles = 10; break;
 	  case 0x2B:	// DEX IX
-	    _IX--; cycles = 10; break;
+	    _reg.IX--; cycles = 10; break;
 	  case 0xE9:	// JP (IX)
-	    _PC = _IX; cycles = 8; break;
+	    _PC = _reg.IX; cycles = 8; break;
 
 
 	  case 0xCB:
@@ -1386,30 +1500,35 @@ static void run()
 
 	    switch(_IR) {
 	      case 0x06:	// RLC (IX+o)
-		store(_IX+(int8_t)o, RLC(load(_IX+(int8_t)o))); cycles = 23; break;
+		store(_reg.IX+(int8_t)o, RLC(load(_reg.IX+(int8_t)o))); cycles = 23; break;
 	      case 0x0E:	// RRC (IX+o)
-		store(_IX+(int8_t)o, RRC(load(_IX+(int8_t)o))); cycles = 23; break;
+		store(_reg.IX+(int8_t)o, RRC(load(_reg.IX+(int8_t)o))); cycles = 23; break;
 	      case 0x16:	// RL (IX+o)
-		store(_IX+(int8_t)o, RL(load(_IX+(int8_t)o))); cycles = 23; break;
+		store(_reg.IX+(int8_t)o, RL(load(_reg.IX+(int8_t)o))); cycles = 23; break;
 	      case 0x1E:	// RR (IX+o)
-		store(_IX+(int8_t)o, RR(load(_IX+(int8_t)o))); cycles = 23; break;
+		store(_reg.IX+(int8_t)o, RR(load(_reg.IX+(int8_t)o))); cycles = 23; break;
 	      case 0x26:	// SLA (IX+o)
-		store(_IX+(int8_t)o, SLA(load(_IX+(int8_t)o))); cycles = 23; break;
+		store(_reg.IX+(int8_t)o, SLA(load(_reg.IX+(int8_t)o))); cycles = 23; break;
 	      case 0x2E:	// SRA (IX+o)
-		store(_IX+(int8_t)o, SRA(load(_IX+(int8_t)o))); cycles = 23; break;
+		store(_reg.IX+(int8_t)o, SRA(load(_reg.IX+(int8_t)o))); cycles = 23; break;
+	      case 0x36:	// SLL (IX+o)
+		store(_reg.IX+(int8_t)o, SLL(load(_reg.IX+(int8_t)o))); cycles = 23; break;
 	      case 0x3E:	// SRL (IX+o)
-		store(_IX+(int8_t)o, SRL(load(_IX+(int8_t)o))); cycles = 23; break;
+		store(_reg.IX+(int8_t)o, SRL(load(_reg.IX+(int8_t)o))); cycles = 23; break;
 	      case 0x46: case 0x4E: case 0x56: case 0x5E: // BIT b,(IX+o)
 	      case 0x66: case 0x6E: case 0x76: case 0x7E:
-		BIT((_IR>>3)&0x07, load(_IX+(int8_t)o)); cycles = 20; break;
+		BIT((_IR>>3)&0x07, load(_reg.IX+(int8_t)o)); cycles = 20;
+		// _reg.F = (_reg.F&~F_XY) | (((_reg.IX+((int8_t)o))>>8)&F_XY);
+		_reg.F &= ~F_XY;
+		break;
 	      case 0xC6: case 0xCE: case 0xD6: case 0xDE: // SET b,(IX+o)
 	      case 0xE6: case 0xEE: case 0xF6: case 0xFE:
-		store(_IX+(int8_t)o, load(_IX+(int8_t)o) | (1<<((_IR>>3)&0x07)));
+		store(_reg.IX+(int8_t)o, load(_reg.IX+(int8_t)o) | (1<<((_IR>>3)&0x07)));
 		cycles = 23;
 		break;
 	      case 0x86: case 0x8E: case 0x96: case 0x9E: // RES b,(IX+o)
 	      case 0xA6: case 0xAE: case 0xB6: case 0xBE:
-		store(_IX+(int8_t)o, load(_IX+(int8_t)o) & ~(1<<((_IR>>3)&0x07)));
+		store(_reg.IX+(int8_t)o, load(_reg.IX+(int8_t)o) & ~(1<<((_IR>>3)&0x07)));
 		cycles = 23;
 		break;
 	      default:
@@ -1423,7 +1542,7 @@ static void run()
 	  default:
 	    /* Undocumented:  DD/FD are NOPs that set internal flag */
 	    /* If next instruction ignores flag, it's just a NOP */
-	    _PC -= 2;
+	    _PC --;
 	    cycles = 4;
 	    if (_log) {
 	      fprintf(_log, "Illegal DD instruction: %02X\n", _IR);
@@ -1472,7 +1591,7 @@ static void run()
 	    break;
 	  case 0x57:	// LD A,I
 	    _reg.A = _I;
-	    _reg.F = ((_I & 0x80)? F_S : 0) | ((_I==0)? F_Z : 0) |
+	    _reg.F = (_I & F_SXY) | ((_I==0)? F_Z : 0) |
 	             (_IFF2? F_PV : 0) | (_reg.F & F_C);
 	    cycles = 9;
 	    break;
@@ -1482,7 +1601,7 @@ static void run()
 	    break;
 	  case 0x5F:	// LD A,R
 	    _reg.A = _R;
-	    _reg.F = ((_R & 0x80)? F_S : 0) | ((_R==0)? F_Z : 0) |
+	    _reg.F = (_R & F_SXY) | ((_R==0)? F_Z : 0) |
 	             (_IFF2? F_PV : 0) | (_reg.F & F_C);
 	    cycles = 9;
 	    break;
@@ -1641,131 +1760,135 @@ static void run()
 	switch(_IR) {
 	  case 0x36:	// LD (IY+o),n
 	    o = immediate_value();
-	    store(_IY+(int8_t)o, immediate_value());
+	    store(_reg.IY+(int8_t)o, immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x70 ... 0x75:	// LD (IY+o),r
 	  case 0x77:
-	    store(_IY+(int8_t)immediate_value(), reg8(_IR & 0x07));
+	    store(_reg.IY+(int8_t)immediate_value(), reg8(_IR & 0x07));
 	    cycles = 19;
 	    break;
 	  case 0x22:	// LD (nn),IY
 	    addr = immediate_addr();
-	    store(addr, _IY & 0xFF);
-	    store(addr+1, _IY>>8);
+	    store(addr,   _reg.IYl);
+	    store(addr+1, _reg.IYh);
 	    cycles = 20;
 	    break;
 	  case 0x7E:	// LD A,(IY+o)
-	    _reg.A = load(_IY + (int8_t)immediate_value());
+	    _reg.A = load(_reg.IY + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x46:	// LD B,(IY+o)
-	    _reg.B = load(_IY + (int8_t)immediate_value());
+	    _reg.B = load(_reg.IY + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x4E:	// LD C,(IY+o)
-	    _reg.C = load(_IY + (int8_t)immediate_value());
+	    _reg.C = load(_reg.IY + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x56:	// LD D,(IY+o)
-	    _reg.D = load(_IY + (int8_t)immediate_value());
+	    _reg.D = load(_reg.IY + (int8_t)immediate_value());
+	    cycles = 19;
+	    break;
+	  case 0x5E:	// LD E,(IY+o)
+	    _reg.E = load(_reg.IY + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x66:	// LD H,(IY+o)
-	    _reg.H = load(_IY + (int8_t)immediate_value());
+	    _reg.H = load(_reg.IY + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x6E:	// LD L,(IY+o)
-	    _reg.L = load(_IY + (int8_t)immediate_value());
+	    _reg.L = load(_reg.IY + (int8_t)immediate_value());
 	    cycles = 19;
 	    break;
 	  case 0x2A:	// LD IY,(nn)
 	    addr = immediate_addr();
-	    _IY = load(addr) | (load(addr+1)<<8);
+	    _reg.IY = load(addr) | (load(addr+1)<<8);
 	    cycles = 20;
 	    break;
 	  case 0x21:	// LD IY,nn
-	    _IY = immediate_addr();
+	    _reg.IY = immediate_addr();
 	    cycles = 14;
 	    break;
 	  case 0xF9:	// LD SP,IY
-	    _SP = _IY;
+	    _SP = _reg.IY;
 	    cycles = 10;
 	    break;
 	  case 0xE1:	// POP IY
-	    _IY = load(_SP++);
-	    _IY |= load(_SP++)<<8;
+	    _reg.IYl = load(_SP++);
+	    _reg.IYh = load(_SP++);
 	    cycles = 14;
 	    break;
 	  case 0xE5:	// PUSH IY
-	    store(--_SP, _IY>>8);
-	    store(--_SP, _IY & 0xFF);
+	    store(--_SP, _reg.IYh);
+	    store(--_SP, _reg.IYl);
 	    cycles = 15;
 	    break;
 	  case 0xE3:	// EX (SP),IY
-	    l = load(_SP);   store(_SP, _IY & 0xFF);
-	    h = load(_SP+1); store(_SP+1, _IY >> 8);
-	    _IY = (h<<8) | l;
+	    l = load(_SP);   store(_SP,   _reg.IYl);
+	    h = load(_SP+1); store(_SP+1, _reg.IYh);
+	    _reg.IY = (h<<8) | l;
 	    cycles = 23;
 	    break;
 	  case 0x86:	// ADD A,(IY+o)
-	    ADD(load(_IY+(int8_t)immediate_value()));
+	    ADD(load(_reg.IY+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x8E:	// ADC A,(IY+o)
-	    ADC(load(_IY+(int8_t)immediate_value()));
+	    ADC(load(_reg.IY+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x96:	// SUB (IY+o)
-	    SUB(load(_IY+(int8_t)immediate_value()));
+	    SUB(load(_reg.IY+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x9E:	// SBC A,(IY+o)
-	    SBC(load(_IY+(int8_t)immediate_value()));
+	    SBC(load(_reg.IY+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0xA6:	// AND (IY+o)
-	    AND(load(_IY+(int8_t)immediate_value()));
-	    cycles = 19;
-	    break;
-	  case 0xB6:	// OR (IY+o)
-	    OR(load(_IY+(int8_t)immediate_value()));
+	    AND(load(_reg.IY+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0xAE:	// XOR (IY+o)
-	    XOR(load(_IY+(int8_t)immediate_value()));
+	    XOR(load(_reg.IY+(int8_t)immediate_value()));
+	    cycles = 19;
+	    break;
+	  case 0xB6:	// OR (IY+o)
+	    OR(load(_reg.IY+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0xBE:	// CP (IY+o)
-	    CP(load(_IY+(int8_t)immediate_value()));
+	    CP(load(_reg.IY+(int8_t)immediate_value()));
 	    cycles = 19;
 	    break;
 	  case 0x34:	// INC (IY+o)
-	    addr = _IY+(int8_t)immediate_value();
+	    addr = _reg.IY+(int8_t)immediate_value();
 	    store(addr, INC(load(addr)));
 	    cycles = 23;
 	    break;
 	  case 0x35:	// DEC (IY+o)
-	    addr = _IY+(int8_t)immediate_value();
+	    addr = _reg.IY+(int8_t)immediate_value();
 	    store(addr, DEC(load(addr)));
 	    cycles = 23;
 	    break;
 	  case 0x09:	// ADD IY, BC
-	    _IY = ADD16(_IY, _reg.BC); cycles = 15; break;
+	    _reg.IY = ADD16(_reg.IY, _reg.BC); cycles = 15; break;
 	  case 0x19:	// ADD IY, DE
-	    _IY = ADD16(_IY, _reg.DE); cycles = 15; break;
+	    _reg.IY = ADD16(_reg.IY, _reg.DE); cycles = 15; break;
 	  case 0x29:	// ADD IY, IX
-	    _IY = ADD16(_IY, _IX);     cycles = 15; break;
+	    _reg.IY = ADD16(_reg.IY, _reg.IY); cycles = 15; break;
 	  case 0x39:	// ADD IY, SP
-	    _IY = ADD16(_IY, _SP);     cycles = 15; break;
+	    _reg.IY = ADD16(_reg.IY, _SP);     cycles = 15; break;
 
 	  case 0x23:	// INC IY
-	    _IY++; cycles = 10; break;
+	    _reg.IY++; cycles = 10; break;
 	  case 0x2B:	// DEC IY
-	    _IY--; cycles = 10; break;
+	    _reg.IY--; cycles = 10; break;
 
 	  case 0xE9:	// JP (IY)
-	    _PC = _IY; cycles = 8; break;
+	    _PC = _reg.IY; cycles = 8; break;
 
 	  case 0xCB:
 	    o = immediate_value();
@@ -1774,30 +1897,35 @@ static void run()
 
 	    switch(_IR) {
 	      case 0x06:	// RLC (IY+o)
-		store(_IY+(int8_t)o, RLC(load(_IY+(int8_t)o))); cycles = 23; break;
+		store(_reg.IY+(int8_t)o, RLC(load(_reg.IY+(int8_t)o))); cycles = 23; break;
 	      case 0x0E:	// RRC (IY+o)
-		store(_IY+(int8_t)o, RRC(load(_IY+(int8_t)o))); cycles = 23; break;
+		store(_reg.IY+(int8_t)o, RRC(load(_reg.IY+(int8_t)o))); cycles = 23; break;
 	      case 0x16:	// RL (IY+o)
-		store(_IY+(int8_t)o, RL(load(_IY+(int8_t)o))); cycles = 23; break;
+		store(_reg.IY+(int8_t)o, RL(load(_reg.IY+(int8_t)o))); cycles = 23; break;
 	      case 0x1E:	// RR (IY+o)
-		store(_IY+(int8_t)o, RR(load(_IY+(int8_t)o))); cycles = 23; break;
+		store(_reg.IY+(int8_t)o, RR(load(_reg.IY+(int8_t)o))); cycles = 23; break;
 	      case 0x26:	// SLA (IY+o)
-		store(_IY+(int8_t)o, SLA(load(_IY+(int8_t)o))); cycles = 23; break;
+		store(_reg.IY+(int8_t)o, SLA(load(_reg.IY+(int8_t)o))); cycles = 23; break;
 	      case 0x2E:	// SRA (IY+o)
-		store(_IY+(int8_t)o, SRA(load(_IY+(int8_t)o))); cycles = 23; break;
+		store(_reg.IY+(int8_t)o, SRA(load(_reg.IY+(int8_t)o))); cycles = 23; break;
+	      case 0x36:	// SLL (IY+o)
+		store(_reg.IY+(int8_t)o, SLL(load(_reg.IY+(int8_t)o))); cycles = 23; break;
 	      case 0x3E:	// SRL (IY+o)
-		store(_IY+(int8_t)o, SRL(load(_IY+(int8_t)o))); cycles = 23; break;
+		store(_reg.IY+(int8_t)o, SRL(load(_reg.IY+(int8_t)o))); cycles = 23; break;
 	      case 0x46: case 0x4E: case 0x56: case 0x5E: // BIT b,(IY+o)
 	      case 0x66: case 0x6E: case 0x76: case 0x7E:
-		BIT((_IR>>3)&0x07, load(_IY+(int8_t)o)); cycles = 20; break;
+		BIT((_IR>>3)&0x07, load(_reg.IY+(int8_t)o)); cycles = 20;
+		// _reg.F = (_reg.F&~F_XY) | (((_reg.IY+((int8_t)o))>>8)&F_XY);
+		_reg.F &= ~F_XY;
+		break;
 	      case 0xC6: case 0xCE: case 0xD6: case 0xDE: // SET b,(IY+o)
 	      case 0xE6: case 0xEE: case 0xF6: case 0xFE:
-		store(_IY+(int8_t)o, load(_IY+(int8_t)o) | (1<<((_IR>>3)&0x07)));
+		store(_reg.IY+(int8_t)o, load(_reg.IY+(int8_t)o) | (1<<((_IR>>3)&0x07)));
 		cycles = 23;
 		break;
 	      case 0x86: case 0x8E: case 0x96: case 0x9E: // RES b,(IX+o)
 	      case 0xA6: case 0xAE: case 0xB6: case 0xBE:
-		store(_IY+(int8_t)o, load(_IY+(int8_t)o) & ~(1<<((_IR>>3)&0x07)));
+		store(_reg.IY+(int8_t)o, load(_reg.IY+(int8_t)o) & ~(1<<((_IR>>3)&0x07)));
 		cycles = 23;
 		break;
 	      default:
@@ -1811,7 +1939,7 @@ static void run()
 	  default:
 	    /* Undocumented:  DD/FD are NOPs that set internal flag */
 	    /* If next instruction ignores flag, it's just a NOP */
-	    _PC -= 2;
+	    _PC --;
 	    cycles = 4;
 	    if (_log) {
 	      fprintf(_log, "Illegal FD instruction: %02X\n", _IR);
@@ -1831,25 +1959,32 @@ static void run()
     clocks += cycles;
     _totclk += cycles;
     pixclocks += cycles;
-    if (clocks > 3580) {
+#define PROCESS_RATE 1000
+    if (clocks > (CLKRATE+(PROCESS_RATE/2))/PROCESS_RATE) {
       SDL_Event event;
       static int keydown = 0;
-      while(SDL_PollEvent(&event)) {  
+      while(SDL_PollEvent(&event)) {
 	switch(event.type) {
 	  case SDL_KEYDOWN:
 	    if (event.key.keysym.sym <= 128) {
 	      keydown = _key = event.key.keysym.sym;
 	      _ctrl = event.key.keysym.mod & KMOD_CTRL;
 	      _shift = event.key.keysym.mod & KMOD_SHIFT;
+	      _capslk = event.key.keysym.mod & KMOD_CAPS;
 	      _key = fixkeys(_key, &_shift, &_ctrl);
 	    }
-	    if (event.key.keysym.sym == SDLK_F1) quit();
-	    if (event.key.keysym.sym == SDLK_ESCAPE) return;
+	    if (event.key.keysym.sym == SDLK_F12) quit();
+	    if (event.key.keysym.sym == SDLK_F11) return;
 	    break;
 	  case SDL_KEYUP:
 	    if (event.key.keysym.sym == keydown) _key = 0;
 	    if (event.key.keysym.mod & KMOD_CTRL) _ctrl = 0;
 	    if (event.key.keysym.mod & KMOD_SHIFT) _shift = 0;
+	    if (event.key.keysym.mod & KMOD_CAPS) _capslk = 0;
+	    if (event.key.keysym.sym == SDLK_F1) {
+	      _turbo ^= TURBO_KEY;
+	      SDL_SetWindowTitle(_window, _turbo? "Aquarius (turbo)" : "Aquarius");
+	    }
 	    break;
 	  case SDL_QUIT:
 	    quit();
@@ -1860,23 +1995,27 @@ static void run()
 	screen_update();
 	pixclocks -= VSCLKS;
       }
+      aqsnd_process();
 
-      clocks -= 3580;
+      clocks -= (CLKRATE+(PROCESS_RATE/2))/PROCESS_RATE;
       gettimeofday(&t, NULL);
       cur = t.tv_sec*1000000+t.tv_usec;
-      long diff = 1000 - (cur - prev);
-      prev = cur;
-      if (_is_tape) auto_end_tape();
-      else if (diff > 0) {
+      long diff = 1000000/PROCESS_RATE - (cur - prev);
+      if(_turbo)
+	prev = cur;
+      else if(diff < -20000) { /* don't fall behind more than 20ms */
+	fprintf(stderr, "lost %ldus\n", -diff);
+	prev = cur;
+      } else
+	prev = cur + diff;
+      if (!_turbo && diff > 0)
 	usleep(diff);
-	prev += diff;
-      }
     }
 
     if (_keymode == TIMER && _keydown > 0) _keydown -= cycles;
 //     if (_log) {
 //       int i;
-//       fprintf(_log, "\tPC: %04X SP:1%02X A:%d IX:%d IY:%d F:%s\n",_PC, _SP, _reg.A, _IX, _IY, status(_reg.F));
+//       fprintf(_log, "\tPC: %04X SP:1%02X A:%d IX:%d IY:%d F:%s\n",_PC, _SP, _reg.A, _reg.IX, _reg.IY, status(_reg.F));
 //       for(i=0;i<_widx;i++) {
 // 	fprintf(_log,"  %04X -> %02X/%d\n", _wlog[i].addr, _wlog[i].data, _wlog[i].data);
 //       }
@@ -1885,6 +2024,9 @@ static void run()
 
     if (halted) {
       //FIXME: Wait for an interrupt
+      // Then again, no known devices on Aquarius generate interrupts
+      puts("HALTed");
+      quit();
     }
   }
 
@@ -1899,11 +2041,14 @@ void reset()
     _reg.BC = _reg.DE = _reg.HL = 0x0000;
     _alt.AF = 0xFFFF;
     _alt.BC = _alt.DE = _alt.HL = 0x0000;
-    _IX = _IY = 0;
+    _reg.IX = _reg.IY = 0;
+//    _IX = _IY = 0;
     _IFF1 = _IFF2 = 0;
     _imode = 0;
 
     _I = _R = 0;
+
+    aqsnd_reset();
 
     run();
   } while (1);

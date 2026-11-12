@@ -1,0 +1,1411 @@
+	.title	'Z80 instruction set exerciser'
+
+.include "aquarius.mac"
+
+; zexlax.z80 - Z80 instruction set exerciser
+; Copyright (C) 1994  Frank D. Cringle
+;
+; This program is free software; you can redistribute it and/or
+; modify it under the terms of the GNU General Public License
+; as published by the Free Software Foundation; either version 2
+; of the License, or (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+; Ported to Aq Aquarius Emulator by Thomas J. Moore:
+;   - Changed syntax and macros for sdasz80 (from sdcc)
+;   - Removed CR characters from file (mostly for my own benefit)
+;   - Aquarius-specific init & echo functions & shutdown
+;   - Reformatted error message for more pleasant 40col output
+;   - ROMable: SMOC and variables moved to RAM.
+;     Note: The CRCs assume execution at $100, meaning that msbt is at
+;     $103.  This is why it's only useful for the Aq emulator, rather
+;     than an Aquarius in general:  rather than change the CRCs to
+;     match a RAM address, I just made the ROM at $103 writable when
+;     running this test.  See the cpd test below for additional notes.
+;     Note 2: The ROM is more than 8K, so I stuck the ROM's CRC table in
+;     a separate 8K section.
+;     TODO: make msbt's address a compile-time option, and record the
+;     CRCs generated from a stable RAM address using the same code.
+;     I was going to write code that automatically changes/reverts the
+;     address fields, but that's a lot of trouble and would consume
+;     too much CPU on every test cycle.
+;   - Tapeable.  This can also be compiled as a BASIC-loadable program
+;     using ihx2bin -t.
+
+	.area code1 (abs)
+.ifne ROM
+	; crctab overflows ROM, so put it before header
+	; I could stick it at the top, but everything else is ROM, anyway,
+	; so do it the easy way and don't hard-code the size (0x400).
+	; Or, that's what I'd like to say, but sdasz80 insists on hard-coding.
+	.org	AQROM16K
+	.include "crctab.mac"
+;	.rept	AQROMSTART-. ; relocation error???  wtf does that even mean?
+	.rept	AQROMSTART-AQROM16K-0x400
+	.db 0
+	.endm
+
+; AQUARIUS ROM Header
+;	.org AQROMSTART
+	AQROMHDR ZEXALL1.0
+
+; After 16-byte header, this is now E010.  This is the hard-coded
+; ROM entry point.
+
+; skip the usual Aquarius colorful press ENTER screen and just run
+;	BOOTSPLASH aqinit,ZEXALL
+
+aqinit:	RINITBASIC
+	ld a,#11 ; clear screen
+	PRNTCHR
+	jp start
+
+ramaddr = 0x3980
+.macro ram s,n
+	s = ramaddr
+	ramaddr = ramaddr + n
+.endm
+.else
+	.org EBASIC_ASTART
+	ABASIC_MV start,end
+
+.macro ram s,n
+s:	.rept n
+	.db 0
+	.endm
+.endm
+.endif
+
+; machine state before test (needs to be at predictably constant address)
+; To put it another way:  all the CRCs assume this is at 0x103.
+; ram msbt 14
+; ram spbt 2+2 ; extra 2 bytes for cpd overrun
+msbt = 0x0103
+spbt = msbt + 14
+
+; For the purposes of this test program, the machine state consists of:
+;	a 2 byte memory operand, followed by
+;	the registers iy,ix,hl,de,bc,af,sp
+; for a total of 16 bytes.
+
+; The program tests instructions (or groups of similar instructions)
+; by cycling through a sequence of machine states, executing the test
+; instruction for each one and running a 32-bit crc over the resulting
+; machine states.  At the end of the sequence the crc is compared to
+; an expected value that was found empirically on a real Z80.
+
+; A test case is defined by a descriptor which consists of:
+;	a flag mask byte,
+;	the base case,
+;	the incement vector,
+;	the shift vector,
+;	the expected crc,
+;	a short descriptive message.
+;
+; The flag mask byte is used to prevent undefined flag bits from
+; influencing the results.  Documented flags are as per Mostek Z80
+; Technical Manual.
+;
+; The next three parts of the descriptor are 20 byte vectors
+; corresponding to a 4 byte instruction and a 16 byte machine state.
+; The first part is the base case, which is the first test case of
+; the sequence.  This base is then modified according to the next 2
+; vectors.  Each 1 bit in the increment vector specifies a bit to be
+; cycled in the form of a binary counter.  For instance, if the byte
+; corresponding to the accumulator is set to 0xff in the increment
+; vector, the test will be repeated for all 256 values of the
+; accumulator.  Note that 1 bits don't have to be contiguous.  The
+; number of test cases 'caused' by the increment vector is equal to
+; 2^(number of 1 bits).  The shift vector is similar, but specifies a
+; set of bits in the test case that are to be successively inverted.
+; Thus the shift vector 'causes' a number of test cases equal to the
+; number of 1 bits in it.
+
+; The total number of test cases is the product of those caused by the
+; counter and shift vectors and can easily become unweildy.  Each
+; individual test case can take a few milliseconds to execute, due to
+; the overhead of test setup and crc calculation, so test design is a
+; compromise between coverage and execution time.
+
+; This program is designed to detect differences between
+; implementations and is not ideal for diagnosing the causes of any
+; discrepancies.  However, provided a reference implementation (or
+; real system) is available, a failing test case can be isolated by
+; hand using a binary search of the test space.
+
+.ifne 0 ; PRINTSTR apparently crashes and corrupts the registers as well
+prstr:	push bc
+	push de
+	call PRINTSTR
+	pop de
+	pop bc
+	ret
+.else
+prstr:	ld a,(hl)
+	or a
+	ret z
+	PRNTCHR
+	inc hl
+	jr prstr
+.endif
+
+start:	ld	hl,#0x062a	; cpd test goes 2 bytes beyond msbt
+	ld	(msbt+16),hl	; so store what CP/M zexall has there (ld hl,(6))
+	ld	hl,#msg1
+	call	prstr
+
+.ifne ROM
+	ld	de,#iut+4
+	ld	hl,#iutj
+	ld	bc,#3
+	ldir
+.endif
+
+	ld	hl,#tests	; first test case
+loop:	ld	a,(hl)		; end of list ?
+	inc	hl
+	or	(hl)
+	jp	z,done
+	dec	hl
+	call	stt
+	jp	loop
+	
+done:	ld	hl,#msg2
+	call	prstr
+;	jp	0		; warm boot
+1$:	jr	1$		; HALT/exit or "warm boot" would wipe display
+
+	.macro	OK dw,val
+;	dw	val
+	.endm
+  	.macro	FAIL dw,val
+;	dw	val
+	.endm
+	.macro SKIP dw,val
+;	dw	val
+	.endm
+	.macro UNDOC dw,val
+	dw	val
+	.endm
+
+tests:
+OK	.dw	adc16
+OK	.dw	add16
+OK	.dw	add16x
+OK	.dw	add16y
+OK	.dw	alu8i
+OK	.dw	alu8r
+UNDOC	.dw	alu8rx
+OK	.dw	alu8x
+OK	.dw	bitx
+OK	.dw	bitz80
+OK	.dw	cpd1
+OK	.dw	cpi1
+OK	.dw	daa
+OK	.dw	inca
+OK	.dw	incb
+OK	.dw	incbc
+OK	.dw	incc
+OK	.dw	incd
+OK	.dw	incde
+OK	.dw	ince
+OK	.dw	inch
+OK	.dw	inchl
+OK	.dw	incix
+OK	.dw	inciy
+OK	.dw	incl
+OK	.dw	incm
+OK	.dw	incsp
+OK	.dw	incx
+UNDOC	.dw	incxh
+UNDOC	.dw	incxl
+UNDOC	.dw	incyh
+UNDOC	.dw	incyl
+OK	.dw	ld161
+OK	.dw	ld162
+OK	.dw	ld163
+OK	.dw	ld164
+OK	.dw	ld165
+OK	.dw	ld166
+OK	.dw	ld167
+OK	.dw	ld168
+OK	.dw	ld16im
+OK	.dw	ld16ix
+OK	.dw	ld8bd
+OK	.dw	ld8im
+OK	.dw	ld8imx
+OK	.dw	ld8ix1
+OK	.dw	ld8ix2
+OK	.dw	ld8ix3
+UNDOC	.dw	ld8ixy
+OK	.dw	ld8rr
+UNDOC	.dw	ld8rrx
+OK	.dw	lda
+OK	.dw	ldd1
+OK	.dw	ldd2
+OK	.dw	ldi1
+OK	.dw	ldi2
+OK	.dw	neg
+OK	.dw	rld
+OK	.dw	rot8080
+OK	.dw	rotxy
+OK	.dw	rotz80
+OK	.dw	srz80
+OK	.dw	srzx
+OK	.dw	st8ix1
+OK	.dw	st8ix2
+OK	.dw	st8ix3
+OK	.dw	stabd
+	.dw	0
+
+.macro	tstr	insn,memop,iy,ix,hl,de,bc,flags,acc,sp
+lab$ = .
+	.db	insn
+	.rept 4-(.-lab$)
+	.db 0
+	.endm
+	.dw	memop,iy,ix,hl,de,bc
+	.db	flags
+	.db	acc
+	.dw	sp
+	.narg narg$
+	.ifne	narg$-10
+	error	'missing parameter'
+	.endif
+	.endm
+
+.macro	tmsg	m
+1$:	.ascii	~m~
+	.nchr	nchr$,~m~
+	.ifge	nchr$-30
+	error	'message too long'
+	.else
+	.rept 30-nchr$
+	.db	'.'
+	.endm
+	.endif
+	.db	0
+	.endm
+
+; <adc,sbc> hl,<bc,de,hl,sp> (38,912 cycles)
+adc16:	.db	0xff		; flag mask
+	tstr	^'0xed,0x42',0x832c,0x4f88,0xf22b,0xb339,0x7e1f,0x1563,0xd3,0x89,0x465e
+	tstr	^'0,0x38',0,0,0,0xf821,0,0,0,0,0		; (1024 cycles)
+	tstr	0,0,0,0,-1,-1,-1,0xd7,0,-1		; (38 cycles)
+	.db	0xd4,0x8a,0xd5,0x19			; expected crc
+	tmsg	^'<adc,sbc> hl,<bc,de,hl,sp>'
+
+; add hl,<bc,de,hl,sp> (19,456 cycles)
+add16:	.db	0xff		; flag mask
+	tstr	9,0xc4a5,0xc4c7,0xd226,0xa050,0x58ea,0x8566,0xc6,0xde,0x9bc9
+	tstr	0x30,0,0,0,0xf821,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,-1,-1,-1,0xd7,0,-1		; (38 cycles)
+	.db	0xd9,0xa4,0xca,0x05			; expected crc
+	tmsg	^'add hl,<bc,de,hl,sp>'
+
+; add ix,<bc,de,ix,sp> (19,456 cycles)
+add16x:	.db	0xff		; flag mask
+	tstr	^'0xdd,9',0xddac,0xc294,0x635b,0x33d3,0x6a76,0xfa20,0x94,0x68,0x36f5
+	tstr	^'0,0x30',0,0,0xf821,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,-1,0,-1,-1,0xd7,0,-1		; (38 cycles)
+	.db	0xb1,0xdf,0x8e,0xc0			; expected crc
+	tmsg	^'add ix,<bc,de,ix,sp>'
+
+; add iy,<bc,de,iy,sp> (19,456 cycles)
+add16y:	.db	0xff		; flag mask
+	tstr	^'0xfd,9',0xc7c2,0xf407,0x51c1,0x3e96,0x0bf4,0x510f,0x92,0x1e,0x71ea
+	tstr	^'0,0x30',0,0xf821,0,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,-1,0,0,-1,-1,0xd7,0,-1		; (38 cycles)
+	.db	0x39,0xc8,0x58,0x9b			; expected crc
+	tmsg	^'add iy,<bc,de,iy,sp>'
+
+; aluop a,nn (28,672 cycles)
+alu8i:	.db	0xff		; flag mask
+	tstr	0xc6,0x9140,0x7e3c,0x7a67,0xdf6d,0x5b61,0x0b29,0x10,0x66,0x85b2
+	tstr	0x38,0,0,0,0,0,0,0,-1,0			; (2048 cycles)
+	tstr	^'0,-1',0,0,0,0,0,0,0xd7,0,0		; (14 cycles)
+	.db	0x51,0xc1,0x9c,0x2e			; expected crc
+	tmsg	^'aluop a,nn'
+
+; aluop a,<b,c,d,e,h,l,(hl),a> (753,664 cycles)
+alu8r:	.db	0xff		; flag mask
+	tstr	0x80,0xc53e,0x573a,0x4c4d,msbt,0xe309,0xa666,0xd0,0x3b,0xadbb
+	tstr	0x3f,0,0,0,0,0,0,0,-1,0			; (16,384 cycles)
+	tstr	0,0xff,0,0,0,-1,-1,0xd7,0,0		; (46 cycles)
+	.db	0x06,0xc7,0xaa,0x8e			; expected crc
+	tmsg	^'aluop a,<b,c,d,e,h,l,(hl),a>'
+
+; aluop a,<ixh,ixl,iyh,iyl> (376,832 cycles)
+alu8rx:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x84',0xd6f7,0xc76e,0xaccf,0x2847,0x22dd,0xc035,0xc5,0x38,0x234b
+	tstr	^'0x20,0x39',0,0,0,0,0,0,0,-1,0		; (8,192 cycles)
+	tstr	0,0xff,0,0,0,-1,-1,0xd7,0,0		; (46 cycles)
+	.db	0xa8,0x86,0xcc,0x44			; expected crc
+	tmsg	^'aluop a,<ixh,ixl,iyh,iyl>'
+
+; aluop a,(<ix,iy>+1) (229,376 cycles)
+alu8x:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x86,1',0x90b7,msbt-1,msbt-1,0x32fd,0x406e,0xc1dc,0x45,0x6e,0xe5fa
+	tstr	^'0x20,0x38',0,1,1,0,0,0,0,-1,0		; (16,384 cycles)
+	tstr	0,0xff,0,0,0,0,0,0xd7,0,0		; (14 cycles)
+	.db	0xd3,0xf2,0xd7,0x4a			; expected crc
+	tmsg	^'aluop a,(<ix,iy>+1)'
+
+; bit n,(<ix,iy>+1) (2048 cycles)
+bitx:	.db	0xff		; flag mask
+	tstr	^'0xdd,0xcb,1,0x46',0x2075,msbt-1,msbt-1,0x3cfc,0xa79a,0x3d74,0x51,0x27,0xca14
+	tstr	^'0x20,0,0,0x38',0,0,0,0,0,0,0x53,0,0	; (256 cycles)
+	tstr	0,0xff,0,0,0,0,0,0,0,0			; (8 cycles)
+	.db	0x83,0x53,0x4e,0xe1			; expected crc
+	tmsg	^'bit n,(<ix,iy>+1)'
+
+; bit n,<b,c,d,e,h,l,(hl),a> (49,152 cycles)
+; Note:  The CRCs on this assume behavior of the undocumented flags
+; ("X" and "Y") which does not correspond to the Z80 Documented
+; manual.  Either that manual is wrong, or the claim that the CRCs
+; were generated from a genuine Z80 are false.
+;  The manual says:  (HL), (IX), and (IY) set "X" and "Y" from bits in
+;  the high byte of the most recent 16-bit computation (coincidentally,
+;  implementing this for (IX) and (IY) does not affect the CRC for
+;  bitx above).  Yaze, from which this source was lifted, says:  (HL),
+;  (IX), and (IY) set "X" and "Y" to 0.
+;  The manual says:  for all other parameters, "X" and "Y" are set to
+;  the matching bits in the AND result (i.e., only set if the
+;  corresponding bit was selected, and the bit in the result was
+;  selected).  Yaze, instead, sets them to bits of the original value,
+;  but only if the tested bit (regardless of which bit) was set.
+;   - tjm
+bitz80:	.db	0xff		; flag mask
+	tstr	^'0xcb,0x40',0x3ef1,0x9dfc,0x7acc,msbt,0xbe61,0x7a86,0x50,0x24,0x1998
+	tstr	^'0,0x3f',0,0,0,0,0,0,0x53,0,0		; (1024 cycles)
+	tstr	0,0xff,0,0,0,-1,-1,0,-1,0		; (48 cycles)
+	.db	0x5e,0x02,0x0e,0x98			; expected crc
+	tmsg	^'bit n,<b,c,d,e,h,l,(hl),a>'
+
+; cpd<r> (1) (6144 cycles)
+; Note:  This starts reading at msbt+17, 2 bytes beyond the end.  This
+; requires copying the first instruction of the CP/M version of the
+; code after the buffer.
+;   - tjm
+cpd1:	.db	0xff		; flag mask
+	tstr	^'0xed,0xa9',0xc7b6,0x72b4,0x18f6,msbt+17,0x8dbd,1,0xc0,0x30,0x94a3
+	tstr	^'0,0x10',0,0,0,0,0,010,0,-1,0		; (1024 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x13,0x4b,0x62,0x2d			; expected crc
+	tmsg	^'cpd<r>'
+
+; cpi<r> (1) (6144 cycles)
+cpi1:	.db	0xff		; flag mask
+	tstr	^'0xed,0xa1',0x4d48,0xaf4a,0x906b,msbt,0x4e71,1,0x93,0x6a,0x907c
+	tstr	^'0,0x10',0,0,0,0,0,010,0,-1,0		; (1024 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x2d,0xa4,0x2d,0x19			; expected crc
+	tmsg	^'cpi<r>'
+
+; <daa,cpl,scf,ccf>
+daa:	.db	0xff		; flag mask
+	tstr	0x27,0x2141,0x09fa,0x1d60,0xa559,0x8d5b,0x9079,0x04,0x8e,0x299d
+	tstr	0x18,0,0,0,0,0,0,0xd7,-1,0		; (65,536 cycles)
+	tstr	0,0,0,0,0,0,0,0,0,0			; (1 cycle)
+	.db	0x6d,0x2d,0xd2,0x13			; expected crc
+	tmsg	^'<daa,cpl,scf,ccf>'
+
+; <inc,dec> a (3072 cycles)
+inca:	.db	0xff		; flag mask
+	tstr	0x3c,0x4adf,0xd5d8,0xe598,0x8a2b,0xa7b0,0x431b,0x44,0x5a,0xd030
+	tstr	0x01,0,0,0,0,0,0,0,-1,0			; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x81,0xfa,0x81,0x00			; expected crc
+	tmsg	^'<inc,dec> a'
+
+; <inc,dec> b (3072 cycles)
+incb:	.db	0xff		; flag mask
+	tstr	0x04,0xd623,0x432d,0x7a61,0x8180,0x5a86,0x1e85,0x86,0x58,0x9bbb
+	tstr	0x01,0,0,0,0,0,0xff00,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x77,0xf3,0x5a,0x73			; expected crc
+	tmsg	^'<inc,dec> b'
+
+; <inc,dec> bc (1536 cycles)
+incbc:	.db	0xff		; flag mask
+	tstr	0x03,0xcd97,0x44ab,0x8dc9,0xe3e3,0x11cc,0xe8a4,0x02,0x49,0x2a4d
+	tstr	0x08,0,0,0,0,0,0xf821,0,0,0		; (256 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0xd2,0xae,0x3b,0xec			; expected crc
+	tmsg	^'<inc,dec> bc'
+
+; <inc,dec> c (3072 cycles)
+incc:	.db	0xff		; flag mask
+	tstr	0x0c,0xd789,0x0935,0x055b,0x9f85,0x8b27,0xd208,0x95,0x05,0x0660
+	tstr	0x01,0,0,0,0,0,0xff,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x1a,0xf6,0x12,0xa7			; expected crc
+	tmsg	^'<inc,dec> c'
+
+; <inc,dec> d (3072 cycles)
+incd:	.db	0xff		; flag mask
+	tstr	0x14,0xa0ea,0x5fba,0x65fb,0x981c,0x38cc,0xdebc,0x43,0x5c,0x03bd
+	tstr	0x01,0,0,0,0,0xff00,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0xd1,0x46,0xbf,0x51			; expected crc
+	tmsg	^'<inc,dec> d'
+
+; <inc,dec> de (1536 cycles)
+incde:	.db	0xff		; flag mask
+	tstr	0x13,0x342e,0x131d,0x28c9,0x0aca,0x9967,0x3a2e,0x92,0xf6,0x9d54
+	tstr	0x08,0,0,0,0,0xf821,0,0,0,0		; (256 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0xae,0xc6,0xd4,0x2c			; expected crc
+	tmsg	^'<inc,dec> de'
+
+; <inc,dec> e (3072 cycles)
+ince:	.db	0xff		; flag mask
+	tstr	0x1c,0x602f,0x4c0d,0x2402,0xe2f5,0xa0f4,0xa10a,0x13,0x32,0x5925
+	tstr	0x01,0,0,0,0,0xff,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0xca,0x8c,0x6a,0xc2			; expected crc
+	tmsg	^'<inc,dec> e'
+
+; <inc,dec> h (3072 cycles)
+inch:	.db	0xff		; flag mask
+	tstr	0x24,0x1506,0xf2eb,0xe8dd,0x262b,0x11a6,0xbc1a,0x17,0x06,0x2818
+	tstr	0x01,0,0,0,0xff00,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x56,0x0f,0x95,0x5e			; expected crc
+	tmsg	^'<inc,dec> h'
+
+; <inc,dec> hl (1536 cycles)
+inchl:	.db	0xff		; flag mask
+	tstr	0x23,0xc3f4,0x07a5,0x1b6d,0x4f04,0xe2c2,0x822a,0x57,0xe0,0xc3e1
+	tstr	0x08,0,0,0,0xf821,0,0,0,0,0		; (256 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0xfc,0x0d,0x6d,0x4a			; expected crc
+	tmsg	^'<inc,dec> hl'
+
+; <inc,dec> ix (1536 cycles)
+incix:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x23',0xbc3c,0x0d9b,0xe081,0xadfd,0x9a7f,0x96e5,0x13,0x85,0x0be2
+	tstr	^'0,8',0,0,0xf821,0,0,0,0,0,0		; (256 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0xa5,0x4d,0xbe,0x31			; expected crc
+	tmsg	^'<inc,dec> ix'
+
+; <inc,dec> iy (1536 cycles)
+inciy:	.db	0xff		; flag mask
+	tstr	^'0xfd,0x23',0x9402,0x637a,0x3182,0xc65a,0xb2e9,0xabb4,0x16,0xf2,0x6d05
+	tstr	^'0,8',0,0xf821,0,0,0,0,0,0,0		; (256 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x50,0x5d,0x51,0xa3			; expected crc
+	tmsg	^'<inc,dec> iy'
+
+; <inc,dec> l (3072 cycles)
+incl:	.db	0xff		; flag mask
+	tstr	0x2c,0x8031,0xa520,0x4356,0xb409,0xf4c1,0xdfa2,0xd1,0x3c,0x3ea2
+	tstr	0x01,0,0,0,0xff,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0xa0,0xa1,0xb4,0x9f			; expected crc
+	tmsg	^'<inc,dec> l'
+
+; <inc,dec> (hl) (3072 cycles)
+incm:	.db	0xff		; flag mask
+	tstr	0x34,0xb856,0x0c7c,0xe53e,msbt,0x877e,0xda58,0x15,0x5c,0x1f37
+	tstr	0x01,0xff,0,0,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x28,0x29,0x5e,0xce			; expected crc
+	tmsg	^'<inc,dec> (hl)'
+
+; <inc,dec> sp (1536 cycles)
+incsp:	.db	0xff		; flag mask
+	tstr	0x33,0x346f,0xd482,0xd169,0xdeb6,0xa494,0xf476,0x53,0x02,0x855b
+	tstr	0x08,0,0,0,0,0,0,0,0,0xf821		; (256 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x5d,0xac,0xd5,0x27			; expected crc
+	tmsg	^'<inc,dec> sp'
+
+; <inc,dec> (<ix,iy>+1) (6144 cycles)
+incx:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x34,1',0xfa6e,msbt-1,msbt-1,0x2c28,0x8894,0x5057,0x16,0x33,0x286f
+	tstr	^'0x20,1',0xff,0,0,0,0,0,0,0,0		; (1024 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x0b,0x95,0xa8,0xea			; expected crc
+	tmsg	^'<inc,dec> (<ix,iy>+1)'
+
+; <inc,dec> ixh (3072 cycles)
+incxh:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x24',0xb838,0x316c,0xc6d4,0x3e01,0x8358,0x15b4,0x81,0xde,0x4259
+	tstr	^'0,1',0,0xff00,0,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x6f,0x46,0x36,0x62			; expected crc
+	tmsg	^'<inc,dec> ixh'
+
+; <inc,dec> ixl (3072 cycles)
+incxl:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x2c',0x4d14,0x7460,0x76d4,0x06e7,0x32a2,0x213c,0xd6,0xd7,0x99a5
+	tstr	^'0,1',0,0xff,0,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x02,0x7b,0xef,0x2c			; expected crc
+	tmsg	^'<inc,dec> ixl'
+
+; <inc,dec> iyh (3072 cycles)
+incyh:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x24',0x2836,0x9f6f,0x9116,0x61b9,0x82cb,0xe219,0x92,0x73,0xa98c
+	tstr	^'0,1',0xff00,0,0,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x2d,0x96,0x6c,0xf3			; expected crc
+	tmsg	^'<inc,dec> iyh'
+
+; <inc,dec> iyl (3072 cycles)
+incyl:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x2c',0xd7c6,0x62d5,0xa09e,0x7039,0x3e7e,0x9f12,0x90,0xd9,0x220f
+	tstr	^'0,1',0xff,0,0,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x36,0xc1,0x1e,0x75			; expected crc
+	tmsg	^'<inc,dec> iyl'
+
+; ld <bc,de>,(nnnn) (32 cycles)
+ld161:	.db	0xff		; flag mask
+	tstr	^'0xed,0x4b,<msbt,>msbt',0xf9a8,0xf559,0x93a4,0xf5ed,0x6f96,0xd968,0x86,0xe6,0x4bd8
+	tstr	^'0,0x10',0,0,0,0,0,0,0,0,0		; (2 cycles)
+	tstr	0,-1,0,0,0,0,0,0,0,0			; (16 cycles)
+	.db	0x4d,0x45,0xa9,0xac			; expected crc
+	tmsg	^'ld <bc,de>,(nnnn)'
+
+; ld hl,(nnnn) (16 cycles)
+ld162:	.db	0xff		; flag mask
+	tstr	^'0x2a,<msbt,>msbt',0x9863,0x7830,0x2077,0xb1fe,0xb9fa,0xabb8,0x04,0x06,0x6015
+	tstr	0,0,0,0,0,0,0,0,0,0			; (1 cycle)
+	tstr	0,-1,0,0,0,0,0,0,0,0			; (16 cycles)
+	.db	0x5f,0x97,0x24,0x87			; expected crc
+	tmsg	^'ld hl,(nnnn)'
+	
+; ld sp,(nnnn) (16 cycles)
+ld163:	.db	0xff		; flag mask
+	tstr	^'0xed,0x7b,<msbt,>msbt',0x8dfc,0x57d7,0x2161,0xca18,0xc185,0x27da,0x83,0x1e,0xf460
+	tstr	0,0,0,0,0,0,0,0,0,0			; (1 cycles)
+	tstr	0,-1,0,0,0,0,0,0,0,0			; (16 cycles)
+	.db	0x7a,0xce,0xa1,0x1b			; expected crc
+	tmsg	^'ld sp,(nnnn)'
+
+; ld <ix,iy>,(nnnn) (32 cycles)
+ld164:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x2a,<msbt,>msbt',0xded7,0xa6fa,0xf780,0x244c,0x87de,0xbcc2,0x16,0x63,0x4c96
+	tstr	0x20,0,0,0,0,0,0,0,0,0			; (2 cycles)
+	tstr	0,-1,0,0,0,0,0,0,0,0			; (16 cycles)
+	.db	0x85,0x8b,0xf1,0x6d			; expected crc
+	tmsg	^'ld <ix,iy>,(nnnn)'
+	
+; ld (nnnn),<bc,de> (64 cycles)
+ld165:	.db	0xff		; flag mask
+	tstr	^'0xed,0x43,<msbt,>msbt',0x1f98,0x844d,0xe8ac,0xc9ed,0xc95d,0x8f61,0x80,0x3f,0xc7bf
+	tstr	^'0,0x10',0,0,0,0,0,0,0,0,0		; (2 cycles)
+	tstr	0,0,0,0,0,-1,-1,0,0,0			; (32 cycles)
+	.db	0x64,0x1e,0x87,0x15			; expected crc
+	tmsg	^'ld (nnnn),<bc,de>'
+
+; ld (nnnn),hl (16 cycles)
+ld166:	.db	0xff		; flag mask
+	tstr	^'0x22,<msbt,>msbt',0xd003,0x7772,0x7f53,0x3f72,0x64ea,0xe180,0x10,0x2d,0x35e9
+	tstr	0,0,0,0,0,0,0,0,0,0			; (1 cycle)
+	tstr	0,0,0,0,-1,0,0,0,0,0			; (16 cycles)
+	.db	0xa3,0x60,0x8b,0x47			; expected crc
+	tmsg	^'ld (nnnn),hl'
+
+; ld (nnnn),sp (16 cycles)
+ld167:	.db	0xff		; flag mask
+	tstr	^'0xed,0x73,<msbt,>msbt',0xc0dc,0xd1d6,0xed5a,0xf356,0xafda,0x6ca7,0x44,0x9f,0x3f0a
+	tstr	0,0,0,0,0,0,0,0,0,0			; (1 cycle)
+	tstr	0,0,0,0,0,0,0,0,0,-1			; (16 cycles)
+	.db	0x16,0x58,0x5f,0xd7			; expected crc
+	tmsg	^'ld (nnnn),sp'
+
+; ld (nnnn),<ix,iy> (64 cycles)
+ld168:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x22,<msbt,>msbt',0x6cc3,0x0d91,0x6900,0x8ef8,0xe3d6,0xc3f7,0xc6,0xd9,0xc2df
+	tstr	0x20,0,0,0,0,0,0,0,0,0			; (2 cycles)
+	tstr	0,0,-1,-1,0,0,0,0,0,0			; (32 cycles)
+	.db	0xba,0x10,0x2a,0x6b			; expected crc
+	tmsg	^'ld (nnnn),<ix,iy>'
+
+; ld <bc,de,hl,sp>,nnnn (64 cycles)
+ld16im:	.db	0xff		; flag mask
+	tstr	1,0x5c1c,0x2d46,0x8eb9,0x6078,0x74b1,0xb30e,0x46,0xd1,0x30cc
+	tstr	0x30,0,0,0,0,0,0,0,0,0			; (4 cycles)
+	tstr	^'0,0xff,0xff',0,0,0,0,0,0,0,0,0		; (16 cycles)
+	.db	0xde,0x39,0x19,0x69			; expected crc
+	tmsg	^'ld <bc,de,hl,sp>,nnnn'
+
+; ld <ix,iy>,nnnn (32 cycles)
+ld16ix:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x21',0x87e8,0x2006,0xbd12,0xb69b,0x7253,0xa1e5,0x51,0x13,0xf1bd
+	tstr	0x20,0,0,0,0,0,0,0,0,0			; (2 cycles)
+	tstr	^'0,0,0xff,0xff',0,0,0,0,0,0,0,0,0	; (16 cycles)
+	.db	0x22,0x7d,0xd5,0x25			; expected crc
+	tmsg	^'ld <ix,iy>,nnnn'
+
+; ld a,<(bc),(de)> (44 cycles)
+ld8bd:	.db	0xff		; flag mask
+	tstr	0x0a,0xb3a8,0x1d2a,0x7f8e,0x42ac,msbt,msbt,0xc6,0xb1,0xef8e
+	tstr	0x10,0,0,0,0,0,0,0,0,0			; (2 cycles)
+	tstr	0,0xff,0,0,0,0,0,0xd7,-1,0		; (22 cycles)
+	.db	0xb0,0x81,0x89,0x35			; expected crc
+	tmsg	^'ld a,<(bc),(de)>'
+
+; ld <b,c,d,e,h,l,(hl),a>,nn (64 cycles)
+ld8im:	.db	0xff		; flag mask
+	tstr	6,0xc407,0xf49d,0xd13d,0x0339,0xde89,0x7455,0x53,0xc0,0x5509
+	tstr	0x38,0,0,0,0,0,0,0,0,0			; (8 cycles)
+	tstr	0,0,0,0,0,0,0,0,-1,0			; (8 cycles)
+	.db	0xf1,0xda,0xb5,0x56			; expected crc
+	tmsg	^'ld <b,c,d,e,h,l,(hl),a>,nn'
+
+; ld (<ix,iy>+1),nn (32 cycles)
+ld8imx:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x36,1',0x1b45,msbt-1,msbt-1,0xd5c1,0x61c7,0xbdc4,0xc0,0x85,0xcd16
+	tstr	0x20,0,0,0,0,0,0,0,0,0			; (2 cycles)
+	tstr	^'0,0,0,-1',0,0,0,0,0,0,0,-1,0		; (16 cycles)
+	.db	0x26,0xdb,0x47,0x7e			; expected crc
+	tmsg	^'ld (<ix,iy>+1),nn'
+
+; ld <b,c,d,e>,(<ix,iy>+1) (512 cycles)
+ld8ix1:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x46,1',0xd016,msbt-1,msbt-1,0x4260,0x7f39,0x0404,0x97,0x4a,0xd085
+	tstr	^'0x20,0x18',0,1,1,0,0,0,0,0,0		; (32 cycles)
+	tstr	0,-1,0,0,0,0,0,0,0,0			; (16 cycles)
+	.db	0xcc,0x11,0x06,0xa8			; expected crc
+	tmsg	^'ld <b,c,d,e>,(<ix,iy>+1)'
+
+; ld <h,l>,(<ix,iy>+1) (256 cycles)
+ld8ix2:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x66,1',0x84e0,msbt-1,msbt-1,0x9c52,0xa799,0x49b6,0x93,0x00,0xeead
+	tstr	^'0x20,0x08',0,1,1,0,0,0,0,0,0		; (16 cycles)
+	tstr	0,-1,0,0,0,0,0,0,0,0			; (16 cycles)
+	.db	0xfa,0x2a,0x4d,0x03			; expected crc
+	tmsg	^'ld <h,l>,(<ix,iy>+1)'
+
+; ld a,(<ix,iy>+1) (128 cycles)
+ld8ix3:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x7e,1',0xd8b6,msbt-1,msbt-1,0xc612,0xdf07,0x9cd0,0x43,0xa6,0xa0e5
+	tstr	0x20,0,1,1,0,0,0,0,0,0			; (8 cycles)
+	tstr	0,-1,0,0,0,0,0,0,0,0			; (16 cycles)
+	.db	0xa5,0xe9,0xac,0x64			; expected crc
+	tmsg	^'ld a,(<ix,iy>+1)'
+
+; ld <ixh,ixl,iyh,iyl>,nn (32 cycles)
+ld8ixy:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x26',0x3c53,0x4640,0xe179,0x7711,0xc107,0x1afa,0x81,0xad,0x5d9b
+	tstr	^'0x20,8',0,0,0,0,0,0,0,0,0		; (4 cycles)
+	tstr	0,0,0,0,0,0,0,0,-1,0			; (8 cycles)
+	.db	0x24,0xe8,0x82,0x8b			; expected crc
+	tmsg	^'ld <ixh,ixl,iyh,iyl>,nn'
+
+; ld <b,c,d,e,h,l,a>,<b,c,d,e,h,l,a> (3456 cycles)
+ld8rr:	.db	0xff		; flag mask
+	tstr	0x40,0x72a4,0xa024,0x61ac,msbt,0x82c7,0x718f,0x97,0x8f,0xef8e
+	tstr	0x3f,0,0,0,0,0,0,0,0,0			; (64 cycles)
+	tstr	0,0xff,0,0,0,-1,-1,0xd7,-1,0		; (54 cycles)
+	.db	0x74,0x4b,0x01,0x18			; expected crc
+	tmsg	^'ld <bcdehla>,<bcdehla>'
+
+; ld <b,c,d,e,ixy,a>,<b,c,d,e,ixy,a> (6912 cycles)
+ld8rrx:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x40',0xbcc5,msbt,msbt,msbt,0x2fc2,0x98c0,0x83,0x1f,0x3bcd
+	tstr	^'0x20,0x3f',0,0,0,0,0,0,0,0,0		; (128 cycles)
+	tstr	0,0xff,0,0,0,-1,-1,0xd7,-1,0		; (54 cycles)
+	.db	0x47,0x8b,0xa3,0x6b			; expected crc
+	tmsg	^'ld <bcdexya>,<bcdexya>'
+
+; ld a,(nnnn) / ld (nnnn),a (44 cycles)
+lda:	.db	0xff		; flag mask
+	tstr	^'0x32,<msbt,>msbt',0xfd68,0xf4ec,0x44a0,0xb543,0x0653,0xcdba,0xd2,0x4f,0x1fd8
+	tstr	0x08,0,0,0,0,0,0,0,0,0			; (2 cycle)
+	tstr	0,0xff,0,0,0,0,0,0xd7,-1,0		; (22 cycles)
+	.db	0xc9,0x26,0x2d,0xe5			; expected crc
+	tmsg	^'ld a,(nnnn) / ld (nnnn),a'
+
+; ldd<r> (1) (44 cycles)
+ldd1:	.db	0xff		; flag mask
+	tstr	^'0xed,0xa8',0x9852,0x68fa,0x66a1,msbt+3,msbt+1,1,0xc1,0x68,0x20b7
+	tstr	^'0,0x10',0,0,0,0,0,0,0,0,0		; (2 cycles)
+	tstr	0,-1,0,0,0,0,0,0xd7,0,0			; (22 cycles)
+	.db	0x94,0xf4,0x27,0x69			; expected crc
+	tmsg	^'ldd<r> (1)'
+
+; ldd<r> (2) (44 cycles)
+ldd2:	.db	0xff		; flag mask
+	tstr	^'0xed,0xa8',0xf12e,0xeb2a,0xd5ba,msbt+3,msbt+1,2,0x47,0xff,0xfbe4
+	tstr	^'0,0x10',0,0,0,0,0,0,0,0,0		; (2 cycles)
+	tstr	0,-1,0,0,0,0,0,0xd7,0,0			; (22 cycles)
+	.db	0x39,0xdd,0x3d,0xe1			; expected crc
+	tmsg	^'ldd<r> (2)'
+
+; ldi<r> (1) (44 cycles)
+ldi1:	.db	0xff		; flag mask
+	tstr	^'0xed,0xa0',0xfe30,0x03cd,0x6058,msbt+2,msbt,1,0x04,0x60,0x2688
+	tstr	^'0,0x10',0,0,0,0,0,0,0,0,0		; (2 cycles)
+	tstr	0,-1,0,0,0,0,0,0xd7,0,0			; (22 cycles)
+	.db	0xf7,0x82,0xb0,0xd1			; expected crc
+	tmsg	^'ldi<r> (1)'
+
+; ldi<r> (2) (44 cycles)
+ldi2:	.db	0xff		; flag mask
+	tstr	^'0xed,0xa0',0x4ace,0xc26e,0xb188,msbt+2,msbt,2,0x14,0x2d,0xa39f
+	tstr	^'0,0x10',0,0,0,0,0,0,0,0,0		; (2 cycles)
+	tstr	0,-1,0,0,0,0,0,0xd7,0,0			; (22 cycles)
+	.db	0xe9,0xea,0xd0,0xae			; expected crc
+	tmsg	^'ldi<r> (2)'
+
+; neg (16,384 cycles)
+neg:	.db	0xff		; flag mask
+	tstr	^'0xed,0x44',0x38a2,0x5f6b,0xd934,0x57e4,0xd2d6,0x4642,0x43,0x5a,0x09cc
+	tstr	0,0,0,0,0,0,0,0xd7,-1,0			; (16,384 cycles)
+	tstr	0,0,0,0,0,0,0,0,0,0			; (1 cycle)
+	.db	0xd6,0x38,0xdd,0x6a			; expected crc
+	tmsg	^'neg'
+
+; <rld,rrd> (7168 cycles)
+rld:	.db	0xff		; flag mask
+	tstr	^'0xed,0x67',0x91cb,0xc48b,0xfa62,msbt,0xe720,0xb479,0x40,0x06,0x8ae2
+	tstr	^'0,8',0xff,0,0,0,0,0,0,0,0		; (512 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,-1,0			; (14 cycles)
+	.db	0xff,0x82,0x3e,0x77			; expected crc
+	tmsg	^'<rrd,rld>'
+
+; <rlca,rrca,rla,rra> (6144 cycles)
+rot8080: .db	0xff		; flag mask
+	tstr	7,0xcb92,0x6d43,0x0a90,0xc284,0x0c53,0xf50e,0x91,0xeb,0x40fc
+	tstr	0x18,0,0,0,0,0,0,0,-1,0			; (1024 cycles)
+	tstr	0,0,0,0,0,0,0,0xd7,0,0			; (6 cycles)
+	.db	0x9b,0xa3,0x80,0x7c			; expected crc
+	tmsg	^'<rlca,rrca,rla,rra>'
+
+; shift/rotate (<ix,iy>+1) (416 cycles)
+rotxy:	.db	0xff		; flag mask
+	tstr	^'0xdd,0xcb,1,6',0xddaf,msbt-1,msbt-1,0xff3c,0xdbf6,0x94f4,0x82,0x80,0x61d9
+	tstr	^'0x20,0,0,0x38',0,0,0,0,0,0,0x80,0,0	; (32 cycles)
+	tstr	0,0xff,0,0,0,0,0,0x57,0,0		; (13 cycles)
+	.db	0x71,0x00,0x34,0xcb			; expected crc
+	tmsg	^'shf/rot (<ix,iy>+1)'
+
+; shift/rotate <b,c,d,e,h,l,(hl),a> (6784 cycles)
+rotz80:	.db	0xff		; flag mask
+	tstr	0xcb,0xcceb,0x5d4a,0xe007,msbt,0x1395,0x30ee,0x43,0x78,0x3dad
+	tstr	^'0,0x3f',0,0,0,0,0,0,0x80,0,0		; (128 cycles)
+	tstr	0,0xff,0,0,0,-1,-1,0x57,-1,0		; (53 cycles)
+	.db	0xa4,0x25,0x58,0x33			; expected crc
+	tmsg	^'shf/rot <b,c,d,e,h,l,(hl),a>'
+
+; <set,res> n,<b,c,d,e,h,l,(hl),a> (7936 cycles)
+srz80:	.db	0xff		; flag mask
+	tstr	^'0xcb,0x80',0x2cd5,0x97ab,0x39ff,msbt,0xd14b,0x6ab2,0x53,0x27,0xb538
+	tstr	^'0,0x7f',0,0,0,0,0,0,0,0,0		; (128 cycles)
+	tstr	0,0xff,0,0,0,-1,-1,0xd7,-1,0		; (62 cycles)
+	.db	0x8b,0x57,0xf0,0x08			; expected crc
+	tmsg	^'<set,res> n,<bcdehl(hl)a>'
+
+; <set,res> n,(<ix,iy>+1) (1792 cycles)
+srzx:	.db	0xff		; flag mask
+	tstr	^'0xdd,0xcb,1,0x86',0xfb44,msbt-1,msbt-1,0xba09,0x68be,0x32d8,0x10,0x5e,0xa867
+	tstr	^'0x20,0,0,0x78',0,0,0,0,0,0,0,0,0	; (128 cycles)
+	tstr	0,0xff,0,0,0,0,0,0xd7,0,0		;(14 cycles)
+	.db	0xcc,0x63,0xf9,0x8a			; expected crc
+	tmsg	^'<set,res> n,(<ix,iy>+1)'
+
+; ld (<ix,iy>+1),<b,c,d,e> (1024 cycles)
+st8ix1:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x70,1',0x270d,msbt-1,msbt-1,0xb73a,0x887b,0x99ee,0x86,0x70,0xca07
+	tstr	^'0x20,0x03',0,1,1,0,0,0,0,0,0		; (32 cycles)
+	tstr	0,0,0,0,0,-1,-1,0,0,0			; (32 cycles)
+	.db	0x04,0x62,0x6a,0xbf			; expected crc
+	tmsg	^'ld (<ix,iy>+1),<b,c,d,e>'
+
+; ld (<ix,iy>+1),<h,l> (256 cycles)
+st8ix2:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x74,1',0xb664,msbt-1,msbt-1,0xe8ac,0xb5f5,0xaafe,0x12,0x10,0x9566
+	tstr	^'0x20,0x01',0,1,1,0,0,0,0,0,0		; (16 cycles)
+	tstr	0,0,0,0,-1,0,0,0,0,0			; (32 cycles)
+	.db	0x6a,0x1a,0x88,0x31			; expected crc
+	tmsg	^'ld (<ix,iy>+1),<h,l>'
+
+; ld (<ix,iy>+1),a (64 cycles)
+st8ix3:	.db	0xff		; flag mask
+	tstr	^'0xdd,0x77,1',0x67af,msbt-1,msbt-1,0x4f13,0x0644,0xbcd7,0x50,0xac,0x5faf
+	tstr	0x20,0,1,1,0,0,0,0,0,0			; (8 cycles)
+	tstr	0,0,0,0,0,0,0,0,-1,0			; (8 cycles)
+	.db	0xcc,0xbe,0x5a,0x96			; expected crc
+	tmsg	^'ld (<ix,iy>+1),a'
+
+; ld (<bc,de>),a (96 cycles)
+stabd:	.db	0xff		; flag mask
+	tstr	2,0x0c3b,0xb592,0x6cff,0x959e,msbt,msbt+1,0xc1,0x21,0xbde7
+	tstr	0x18,0,0,0,0,0,0,0,0,0			; (4 cycles)
+	tstr	0,-1,0,0,0,0,0,0,-1,0			; (24 cycles)
+	.db	0x7a,0x4c,0x11,0x4f			; expected crc
+	tmsg	^'ld (<bc,de>),a'
+
+; start test pointed to by (hl)
+stt:	push	hl
+	ld	a,(hl)		; get pointer to test
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	a,(hl)		; flag mask
+	ld	(flgmsk+1),a
+	inc	hl
+	push	hl
+	ld	de,#20
+	add	hl,de		; point to incmask
+	ld	de,#counter
+	call	initmask
+	pop	hl
+	push	hl
+	ld	de,#20+20
+	add	hl,de		; point to scanmask
+	ld	de,#shifter
+	call	initmask
+	ld	hl,#shifter
+	ld	(hl),#1		; first bit
+	pop	hl
+	push	hl
+	ld	de,#iut		; copy initial instruction under test
+	ld	bc,#4
+	ldir
+	ld	de,#msbt	; copy initial machine state
+	ld	bc,#16
+	ldir
+	ld	de,#20+20+4	; skip incmask, scanmask and expcrc
+	add	hl,de
+	call	prstr
+	call	initcrc		; initialise crc
+; test loop
+tlp:	ld	a,(iut)
+	cp	#0x76		; pragmatically avoid halt intructions
+	jp	z,tlp2
+	and	a,#0xdf
+	cp	#0xdd
+	jp	nz,tlp1
+	ld	a,(iut+1)
+	cp	#0x76
+tlp1:	call	nz,test		; execute the test instruction
+tlp2:	call	count		; increment the counter
+	call	nz,shift	; shift the scan bit
+	pop	hl		; pointer to test case
+	jp	z,tlp3		; done if shift returned NZ
+	ld	de,#20+20+20
+	add	hl,de		; point to expected crc
+	call	cmpcrc
+	ex      de,hl
+	ld	hl,#okmsg
+	jp	z,tlpok
+	ld	hl,#ermsg1
+	call	prstr
+	ex      de,hl
+	call	phex8
+	ld	hl,#ermsg2
+	call	prstr
+	ld	hl,#crcval
+	call	phex8
+	ld	hl,#crlf
+tlpok:	call	prstr
+	pop	hl
+	inc	hl
+	inc	hl
+	ret
+
+tlp3:	push	hl
+	ld	a,#1		; initialise count and shift scanners
+	ld	(cntbit),a
+	ld	(shfbit),a
+	ld	hl,#counter
+	ld	(cntbyt),hl
+	ld	hl,#shifter
+	ld	(shfbyt),hl
+
+	ld	b,#4		; bytes in iut field
+	pop	hl		; pointer to test case
+	push	hl
+	ld	de,#iut
+	call	setup		; setup iut
+	ld	b,#16		; bytes in machine state
+	ld	de,#msbt
+	call	setup		; setup machine state
+	jp	tlp
+
+; setup a field of the test case
+; b  = number of bytes
+; hl = pointer to base case
+; de = destination
+setup:	call	subyte
+	inc	hl
+	dec	b
+	jp	nz,setup
+	ret
+
+subyte:	push	bc
+	push	de
+	push	hl
+	ld	c,(hl)		; get base byte
+	ld	de,#20
+	add	hl,de		; point to incmask
+	ld	a,(hl)
+	cp	#0
+	jp	z,subshf
+	ld	b,#8		; 8 bits
+subclp:	rrca
+	push	af
+	ld	a,#0
+	call	c,nxtcbit	; get next counter bit if mask bit was set
+	xor	c		; flip bit if counter bit was set
+	rrca
+	ld	c,a
+	pop	af
+	dec	b
+	jp	nz,subclp
+	ld	b,#8
+subshf:	ld	de,#20
+	add	hl,de		; point to shift mask
+	ld	a,(hl)
+	cp	#0
+	jp	z,substr
+	ld	b,#8		; 8 bits
+sbshf1:	rrca
+	push	af
+	ld	a,#0
+	call	c,nxtsbit	; get next shifter bit if mask bit was set
+	xor	c		; flip bit if shifter bit was set
+	rrca
+	ld	c,a
+	pop	af
+	dec	b
+	jp	nz,sbshf1
+substr:	pop	hl
+	pop	de
+	ld	a,c
+	ld	(de),a		; mangled byte to destination
+	inc	de
+	pop	bc
+	ret
+
+; get next counter bit in low bit of a
+ram cntbit 1
+ram cntbyt 2
+
+nxtcbit: push	bc
+	push	hl
+	ld	hl,(cntbyt)
+	ld	b,(hl)
+	ld	hl,#cntbit
+	ld	a,(hl)
+	ld	c,a
+	rlca
+	ld	(hl),a
+	cp	a,#1
+	jp	nz,ncb1
+	ld	hl,(cntbyt)
+	inc	hl
+	ld	(cntbyt),hl
+ncb1:	ld	a,b
+	and	c
+	pop	hl
+	pop	bc
+	ret	z
+	ld	a,#1
+	ret
+	
+; get next shifter bit in low bit of a
+ram shfbit 1
+ram shfbyt 2
+
+nxtsbit: push	bc
+	push	hl
+	ld	hl,(shfbyt)
+	ld	b,(hl)
+	ld	hl,#shfbit
+	ld	a,(hl)
+	ld	c,a
+	rlca
+	ld	(hl),a
+	cp	a,#1
+	jp	nz,nsb1
+	ld	hl,(shfbyt)
+	inc	hl
+	ld	(shfbyt),hl
+nsb1:	ld	a,b
+	and	c
+	pop	hl
+	pop	bc
+	ret	z
+	ld	a,#1
+	ret
+	
+
+; clear memory at hl, bc bytes
+clrmem:	push	af
+	push	bc
+	push	de
+	push	hl
+	ld	(hl),#0
+	ld	d,h
+	ld	e,l
+	inc	de
+	dec	bc
+	ldir
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ret
+
+; initialise counter or shifter
+; de = pointer to work area for counter or shifter
+; hl = pointer to mask
+initmask:
+	push	de
+	ex	de,hl
+	ld	bc,#20+20
+	call	clrmem		; clear work area
+	ex	de,hl
+	ld	b,#20		; byte counter
+	ld	c,#1		; first bit
+	ld	d,#0		; bit counter
+imlp:	ld	e,(hl)
+imlp1:	ld	a,e
+	and	a,c
+	jp	z,imlp2
+	inc	d
+imlp2:	ld	a,c
+	rlca
+	ld	c,a
+	cp	a,#1
+	jp	nz,imlp1
+	inc	hl
+	dec	b
+	jp	nz,imlp
+; got number of 1-bits in mask in reg d
+	ld	a,d
+	and	#0xf8
+	rrca
+	rrca
+	rrca			; divide by 8 (get byte offset)
+	ld	l,a
+	ld	h,#0
+	ld	a,d
+	and	a,#7		; bit offset
+	inc	a
+	ld	b,a
+	ld	a,#0x80
+imlp3:	rlca
+	dec	b
+	jp	nz,imlp3
+	pop	de
+	add	hl,de
+	ld	de,#20
+	add	hl,de
+	ld	(hl),a
+	ret
+
+; multi-byte counter
+count:	push	bc
+	push	de
+	push	hl
+	ld	hl,#counter	; 20 byte counter starts here
+	ld	de,#20		; somewhere in here is the stop bit
+	ex	de,hl
+	add	hl,de
+	ex	de,hl
+cntlp:	inc	(hl)
+	ld	a,(hl)
+	cp	#0
+	jp	z,cntlp1	; overflow to next byte
+	ld	b,a
+	ld	a,(de)
+	and	a,b		; test for terminal value
+	jp	z,cntend
+	ld	(hl),#0		; reset to zero
+cntend:	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+cntlp1:	inc	hl
+	inc	de
+	jp	cntlp
+	
+
+; multi-byte shifter
+shift:	push	bc
+	push	de
+	push	hl
+	ld	hl,#shifter	; 20 byte shift register starts here
+	ld	de,#20		; somewhere in here is the stop bit
+	ex	de,hl
+	add	hl,de
+	ex	de,hl
+shflp:	ld	a,(hl)
+	or	a
+	jp	z,shflp1
+	ld	b,a
+	ld	a,(de)
+	and	b
+	jp	nz,shlpe
+	ld	a,b
+	rlca
+	cp	a,#1
+	jp	nz,shflp2
+	ld	(hl),#0
+	inc	hl
+	inc	de
+shflp2:	ld	(hl),a
+	xor	a		; set Z
+shlpe:	pop	hl
+	pop	de
+	pop	bc
+	ret
+shflp1:	inc	hl
+	inc	de
+	jp	shflp
+
+ram counter 2*20
+ram shifter 2*20
+
+; test harness
+test:	push	af
+	push	bc
+	push	de
+	push	hl
+      .ifne	0
+	ld	hl,#crlf
+	call	prstr
+	ld	hl,#iut
+	ld	b,#4
+	call	hexstr
+	ld	a,#' '
+	PRNTCHR
+	ld	b,#16
+	ld	hl,#msbt
+	call	hexstr
+      .endif
+;	di			; disable interrupts
+	ld	(spsav),sp	; save stack pointer
+	ld	sp,#msbt+2	; point to test-case machine state
+	pop	iy		; and load all regs
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ld	sp,(spbt)
+.ifne ROM
+	jp	iut
+	ram iut,7
+iutr:
+.else
+	ram iut,4
+.endif
+	ld	(spat),sp	; save stack pointer
+	ld	sp,#spat
+	push	af		; save other registers
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	push	iy
+	ld	sp,(spsav)	; restore stack pointer
+;	ei			; enable interrupts
+	ld	hl,(msbt)	; copy memory operand
+	ld	(msat),hl
+	ld	de,#flgsat	; flags after test
+	ld	a,(de)
+.ifeq ROM
+flgmsk:	and	a,#0xd7		; mask-out irrelevant bits (self-modified code!)
+.else
+	ld	hl,#flgmsk+1
+	and	a,(hl)
+	ram flgmsk,2
+.endif
+	ld	(de),a
+	ld	b,#16		; total of 16 bytes of state
+	ld	de,#msat
+	ld	hl,#crcval
+tcrc:	ld	a,(de)
+	inc	de
+	call	updcrc		; accumulate crc of this test case
+	dec	b
+	jp	nz,tcrc
+      .ifne	0
+	ld	a,#' '
+	rst	0x18
+	ld	hl,#crcval
+	call	phex8
+	ld	hl,#crlf
+	call	prstr
+	ld	hl,#msat
+	ld	b,#16
+	call	hexstr
+	ld	hl,#crlf
+	call	prstr
+      .endif
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ret
+
+.ifne ROM
+iutj:	jp iutr
+.endif
+	
+
+; machine state after test
+ram msat 14	; memop,iy,ix,hl,de,bc,af
+ram spat 2	; stack pointer after test
+flgsat	=	spat-2	; flags
+
+ram spsav 2	; saved stack pointer
+
+; display hex string (pointer in hl, byte count in b)
+hexstr:	ld	a,(hl)
+	call	phex2
+	inc	hl
+	dec	b
+	jp	nz,hexstr
+	ret
+
+; display hex
+; display the big-endian 32-bit value pointed to by hl
+phex8:	push	af
+	push	bc
+	push	hl
+	ld	b,#4
+ph8lp:	ld	a,(hl)
+	call	phex2
+	inc	hl
+	dec	b
+	jp	nz,ph8lp
+	pop	hl
+	pop	bc
+	pop	af
+	ret
+
+; display byte in a
+phex2:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	phex1
+	pop	af
+; fall through	
+
+; display low nibble in a
+phex1:	push	af
+	push	bc
+	push	de
+	push	hl
+	and	a,#0x0f
+	cp	a,#10
+	jp	c,ph11
+	add	a,#'a'-'9'-1
+ph11:	add	a,#'0'
+	rst	0x18
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ret
+
+msg1:	.asciz	'Z80 instruction exerciser\n\r'
+msg2:	.asciz	'Tests complete'
+okmsg:	.asciz	'  OK\n\r'
+ermsg1:	.asciz	'  ERROR\n\r**** crc expected:'
+ermsg2:	.asciz	'\n\r****    crc found:'
+crlf:	.db	10,13,0
+
+; compare crc
+; hl points to value to compare to crcval
+cmpcrc:	push	bc
+	push	de
+	push	hl
+	ld	de,#crcval
+	ld	b,#4
+cclp:	ld	a,(de)
+	cp	a,(hl)
+	jp	nz,cce
+	inc	hl
+	inc	de
+	dec	b
+	jp	nz,cclp
+cce:	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+; 32-bit crc routine
+; entry: a contains next byte, hl points to crc
+; exit:  crc updated
+updcrc:	push	af
+	push	bc
+	push	de
+	push	hl
+	push	hl
+	ld	de,#3
+	add	hl,de	; point to low byte of old crc
+	xor	a,(hl)	; xor with new byte
+	ld	l,a
+	ld	h,#0
+	add	hl,hl	; use result as index into table of 4 byte entries
+	add	hl,hl
+	ex	de,hl
+	ld	hl,#crctab
+	add	hl,de	; point to selected entry in crctab
+	ex	de,hl
+	pop	hl
+	ld	bc,#4	; c = byte count, b = accumulator
+crclp:	ld	a,(de)
+	xor	a,b
+	ld	b,(hl)
+	ld	(hl),a
+	inc	de
+	inc	hl
+	dec	c
+	jp	nz,crclp
+      .ifne	0
+	ld	hl,#crcval
+	call	phex8
+	ld	hl,#crlf
+	call	prstr
+      .endif
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ret
+
+initcrc:push	af
+	push	bc
+	push	hl
+	ld	hl,#crcval
+	ld	a,#0xff
+	ld	b,#4
+icrclp:	ld	(hl),a
+	inc	hl
+	dec	b
+	jp	nz,icrclp
+	pop	hl
+	pop	bc
+	pop	af
+	ret
+
+ram crcval 4
+
+.ifeq ROM
+	.include "crctab.mac"
+end:
+.endif

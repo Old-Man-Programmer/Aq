@@ -1,0 +1,582 @@
+; Aquarius definitions and macros
+.nlist
+
+CLKRATE	=	3579545
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; RST macros
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; RST0 = reset.  No point in defining a macro for it
+.macro  EXPECT char ; expect <char> at (HL); else SN error
+	rst 0x08
+	.db 'char'
+.endm
+.macro  NXTCHR ; inc hl; while((a = (hl)) != ' ');, return carry iff '0'..'9'
+        rst 0x10
+.endm
+.macro  PRNTCHR ; print char a
+	rst 0x18
+.endm
+.macro  CMPDEHL ; carry iff DE > HL
+	rst 0x20
+.endm
+.macro  FPSGN ; FPaccum's sign: -1:neg, 0: 0, 1:pos (sets Z,S flags as well)
+        rst 0x28
+.endm
+; RST30 is a user intercept; see TOKVEC below.  No need to call it,
+; ever.  It does not call the default routine; instead, the default
+; routine calls this before doing its own thing (and this can just pop
+; the return to disable the default behavior entirely).
+.macro BASICVEC tok ; call (TOKVEC), which reads tok may do something
+        rst $30
+	.db tok
+.endm
+; RST38 is the USR() function.  No need to ever call this, either.
+; Note that the USR function starts at $3803, and is usually a jp
+; instruction.  The documented procedure is to change the vector at
+; $3804, but you can just change the jp as well.
+.macro USRFUN
+       rst $38
+.endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; The secret header format of the Aquarius expansion ROMs ($E000)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Entry point is immediately following header ($E010)
+AQROMSTART = 0xE000
+AQROM16K = 0xC000 ; need to pad up to 0xE000 to add header & start code
+.macro AQROMHDR name,code ; 9 char max, padded w/ spaces; code=xor(opt)
+        ; 1st 3 chars are output directly
+curc$ = 0
+        .irpc c$,^~name   ~
+curc$ = curc$ + 1
+        .ifle curc$-3
+	.db ''c$
+	.endif
+	.endm
+	; The rest of the header consinsts of an xor adjust byte,
+	; followed by the rest of the name text, each character
+	; paired with a header magic character.  The magic
+	; header string is the reverse of:
+	;    `strings - radofin.bin | head -n 3 | tail -n 1` (+7$$3,)
+	; But to obscure things more, each character has its header
+	; offset subtracted, and is then rotated left 2 bits.
+        ; rl2(','=2C - 5) = 0x9C; rl2('3'=33 - 7) = 0xB0
+	; rl2('$'=24 - 9) = 0x6C; rl2('$'=24 - B) = 0x64
+	; rl2('7'=37 - D) = 0xA8; rl2('+'=2B - F) = 0x70
+	; The above 6 bytes must be in their respective positions,
+	; or the ROM won't be recognized.  Also, the xor adjust byte
+	; may not be rl2(0 - 3) = 0xF7, or the header matcher will
+	; overshoot.  This macro does not check for F7.
+	; The encryption (xor) value is the sum of the 12 characters
+	; starting at the xor adjust byte, plus the sum of integers 1
+	; to 12 (i.e. 78d), all xored with the 13th character (70).
+	; The sum of the static control bytes is C4, plus 78d is 12.
+curc$ = 0
+sum$ = 0x12
+	.irpc c$,^~name         ~
+curc$ = curc$ + 1
+        .ifgt curc$-3
+	.ifle curc$-9
+sum$	= sum$ + ''c$
+        .endif
+	.endif
+	.endm
+	; The given xor value is optional, and defaults to 0 (no encryption).
+	.narg narg$
+	.ifeq narg$-2
+xor$	= code
+	.else
+xor$	= 0
+        .endif
+	; xor = (sum$+adjbyte)^0x70 -> adjbyte = xor^0x70 - sum$
+	.db (xor$^0x70) - sum$
+	; And now for the rest of the header, as described above.
+curc$ = 0
+	.irpc c$,^~name         ~
+curc$ = curc$ + 1
+        .iifeq curc$-4 .db ''c$,0x9C
+	.iifeq curc$-5 .db ''c$,0xB0
+	.iifeq curc$-6 .db ''c$,0x6C
+	.iifeq curc$-7 .db ''c$,0x64
+	.iifeq curc$-8 .db ''c$,0xA8
+	.iifeq curc$-9 .db ''c$,0x70
+	.endm
+.endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; BASIC extension header ($2000)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+AQBASICEXTSTART = 0x2000
+; Note: BASIC extension always sets xor value to 0xaa by default
+; This is why e.g. the QuickDisk DOS inits EB manually.
+.macro AQBASHEADER name
+	.ascii ',3$$7+'
+	; followed by 10 bytes of whatever
+curc$ = 0
+	.irpc c$,^~name          ~
+curc$ = curc$ + 1
+	.iifle curc$-10 .db ''c$
+	.endm
+.endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Data memory (ROM)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+MAGIC_STR = 0x0082 ; '+7$$3,'
+BASIC_MSG = 0x00b0 ; don't need len here, it's "BASIC"
+PRESSRETURN_MSG = 0x00b5 ; Press RETURN key to start.
+PRESSRETURN_LEN = 25
+ERRMSG = 0x0360 ; " Error\b" + 0
+OKMSG = 0x036e ; " Ok\r\n" + 0
+BRKMSG = 0x0373 ; " Break" + 0
+INITVALS = 0x0187 ; Initial values for BASIC system variables
+INITVALS_LEN = 81
+INITVALS_TARGET = 0x3803 ; Target for first byte if INITVALS
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Data memory (RAM)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+SCREEN = 0x3000
+COLOR  = 0x3400
+ENDSCR = 0x3800
+
+; From https://www.vdsteenoven.com/aquarius/mempointer.html
+; with a few name changes by tjm
+TTYPOS = 0x3800	; Row position of cursor on screen (0x00-0x27)
+CHRPOS = 0x3801	; Address of the cursor within the cursor matrix
+USRGO = 0x3803	; Actual start of USR() function (JP instruction)
+USRVEC = 0x3804	; "USR() Vector" (actually parameter of JP above)
+; see below for 0x3806-7
+LISTCT = 0x3808	; Counter for LIST-command. The listing will be stopped after every 24 rows.
+PTOLD = 0x3809	; Contains the code which will be send to the protection port
+CHARQ = 0x380A	; ASCII-value of the latest key pressed on the keyboard, but not yet been transferred to the character-matrix. Hence the value which will be used by the key-scanning routine (0x380E). The value will eventually end op at address 14350 (0x380F)
+SKEY = 0x380B	; Pointer use in the single key command
+BUFO = 0x380D	; Storage of the character behind the cursor
+CTRLFG = 0x380E	; Debounce count for the key scanning routine
+FLAG = 0x380F	; Current key value after scanning
+DIV = 0x3810	; Subroutine for division (14 bytes)
+RANDOM = 0x381F	; For the use in generation random numbers (..3844)
+LPTLST = 0x3845	; Last printer operation status.
+LPTPOS = 0x3846	; Position of the printerhead (0-131)
+PRTFLG = 0x3847	; Flag to direct output to printer or CRT.
+LINLEN = 0x3848	; Line length. Initially set to 40
+CLMLST = 0x3849	; Position of last comma column
+RUBSW = 0x384A	; Rubout switch
+STKTOP = 0x384B	; Top location to be used for stack. It is followed by the RAM-stack where the strings are stored. At default there are 50 bytes reserved for strings at the top of the memory. With the command 'CLEAR 100' the stringspace will be enlarged en the stack therefor has to start at a lower address.
+CURLIN = 0x384D	; Current line number. Set to 0xFFFF for direct statement mode.
+BSTART = 0x384F	; Pointer to the beginning of Text of Basic programm.
+CASNAM = 0x3851	; 6 bytes for cassette name.
+CASNM2 = 0x3857	; 6 bytes for cassette name read from tape
+CASFL2 = 0x385D	; Flags for cassette input/output routines.
+CASFL3 = 0x385E	; Flags for cassette input/output routines.
+BUFMIN = 0x385F	; Used by INPUT statement
+LINBUF = 0x3860	; 73 bytes used for the current line input buffer.
+BUFEND = 0x38A9	; End of input buffer
+DIMFLG = 0x38AA	; Flag to differentiate variable type.
+VALTYP = 0x38AB	; To differentiate between string or nummeric value.
+DORES = 0x38AC	; Flag for crunch.
+MEMSIZ = 0x38AD	; Contains the highest RAM location.
+; 0x38AF-38C0	; For string functions
+FRETOP = 0x38C1	; Top of string free space.
+TEMP = 0x38C3	; Pointer for addresses of string storage. (3 bytes)
+; 0x38C6-0x38CB	; Use for FOR function.
+; 0x38CC-0x38D3	; Pointer and flags for programm execution
+BRKLIN = 0x38D4	; Points to the start of the BASIC line which was interrupted by the break.
+VARTAB = 0x38D6	; Points to start of simple variable table
+ARYTAB = 0x38D8	; Points to start of array table.
+BASEND = 0x38DA	; Contains the end address of the BASIC & simple & array list.
+READP = 0x38DC	; Points to where the DATA has been READ. At start of programm or after a RESTORE this points to the address before the start of the BASIC programm (14592) which always contains zero.
+; 0x38DE 0x38E3	; Pointer and flags for arrays
+FACLO = 0x38E4	; Floating number (exponent & mantissa stored here.) (5 bytes)
+  ; not sure of format for FP.  INT 28 (sign) checks 38E7 (1 short)
+  ; for 0; this is probably exponent.  Sign is checked in 38E5,
+  ; probably mantissa high.  This implies 4-byte (32-bit),not 5.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; BASIC hooks
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; BASIC calls (TOKVEC) with a 1-byte token @(SP).  By default, TOKVEC
+; just eats the token and returns, so the default code is @(SP)+1.
+; Known tokens:
+;  00 - Print error message (start)
+;       Move to next line, set hl to start of error code table (no spaces):
+;          NF SN RG OD FC OV OM UL BS DD /0 ID TM OS LS ST CN UF MD
+;       then:
+;  01 - Print error message (cont): Print ? and 2 chars @(hl+e).
+;  02 - OK prompt; enter interactive mode
+;  ..
+;  0B - NEW
+TOKVEC = 0x3806
+TOKVEC_DEF = 0x003B
+EBTOKVEC_DEF = 0x206c
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; BASIC entry points
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+GETDE = 0x0682	  ; Get FACLO as 16-bit int in DE
+RETA = 0x0b36	  ; return a in FACLO
+RETAD = 0x0b23	  ; a = high byte, d = low byte -> FACLO
+GETLINE = 0x0d85  ; get 0-term line into LINBUF; set carry on ctrl-C, HL=LINBUF-1
+PRINTSTR = 0x0e9d ; print string at hl until term. 0
+GETKEY = 0x19da	  ; a = key pressed (debounced)
+KEYCHK = 0x1e80   ; a = 0 or translated key code
+BASICSTART = 0x0089 ; Boot phase: print BASIC
+PRESSRETURN = 0x0094 ; Boot phase (print msg & wait for return)
+COLDSTART = 0x00FD ; What happens after pressing ENTER on startup
+                   ; NOTE: THIS CLOBBERS TOKVEC.
+		   ; To bypass this, skip multiple of 3 bytes:
+COLD_ALTINIT = 0x0100 ;   1st 3: ld hl, INITVALS
+COLD_ALTINITL = 0x0103 ;  2nd 3: ld bc, INITVALS_LEN
+COLD_ALTINITD = 0x0106 ;  3rd 3: ld de, INITVALS_TARGET
+
+WARMSTART = 0x00  ; What happens after pressing ^C on startup
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; BASIC tokens (no defines)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; 0x80 END    FOR    NEXT  DATA    INPUT  DIM    READ   LET
+; 0x88 GOTO   RUN    IF    RESTORE GOSUB  RETURN REM    STOP
+; 0x90 ON     LPRINT COPY  DEF     POKE   PRINT  CONT   LIST
+; 0x98 LLIST  CLEAR  CLOAD CSAVE   PSET   PRESET SOUND  NEW
+; 0xA0 TAB(   TO     FN    SPC(    INKEY  THEN   NOT    STEP
+; 0xA8 +      -      *     /       ^      AND    OR     >
+; 0xB0 =      <      SGN   INT     ABS    USR    FRE    LPOS
+; 0xB8 POS    SQR    RND   LOG     EXP    COS    SIN    TAN
+; 0xC0 ATN    PEEK   LEN   STR$    VAL    ASC    CHR$   LEFT$
+; 0xC8 RIGHT$ MID$   POINT
+; Extended BASIC
+; 0xCF                                                  XOR
+; 0xD0 EDIT   LOCATE MENU  CLS     LINE   CIRCLE GET    PUT
+; 0xD8 DRAW
+; QuickDOS
+; 0xD9        KILL   DIR   LOAD    SAVE   WRITE  INIT   DISKCOPY
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Some delay funtions, instead of using ROM calls of unknown quality.
+; LDELAY requires insertion of LDELAY_SUB somewhere
+; SDELAY requires insertion of SDELAY_SUB somewhere
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	; 74*BC-5+14(+17 for call,+10 for LDBC)
+	; max: 0 = 74*65536+9=1.35s
+.macro	LDELAY_SUB
+LDELAY:	EX      (SP),HL    ; 19
+        EX      (SP),HL    ; 19
+	DEC	BC         ; 6
+        LD	A,B        ; 4
+	OR	C          ; 4
+	JR      NZ,LDELAY  ; 12/7
+        RET                ; 10
+.endm
+
+.macro	LDELAY	t,sc,a,ex ; ex = non-blacnk: exactish: pad w/ NOP
+	; cc=CLKRATE
+	; define ldl(t,a)=(cc*t-5-27-a)/74
+$0	=	CLKRATE*(t)/(sc) ; T states to wait
+$1	=	($0-5-27-(a))/74
+$2	=	$1/85536
+$3	=	$1%65536
+	.rept	$2-1
+	LD	BC,#0
+	CALL	LDELAY
+	.endm
+	LD	BC,#$3	; 10
+	CALL	LDELAY	; 17
+	.narg	$5
+.ifeq	$5-4
+$4	=	$0-($1*74+a+27+5)
+	.rept	($4+2)/4
+	NOP
+	.endm
+.endif
+.endm
+
+.macro SDELAY_SUB
+	; 51*B-5+14(+17 for call,+7 for LDB)
+SDELAY:	EX      (SP),HL    ; 19
+        EX      (SP),HL    ; 19
+	DJNZ    SDELAY     ; 13/8
+        RET                ; 10
+.endm
+
+.macro	SDELAY	t,sc,a,ex ; ex = non-blacnk: exactish: pad w/ NOP
+	; cc=CLKRATE
+	; define sdl(t,a)=(cc*t-5-24-a)/51
+$0	=	CLKRATE*(t)/(sc) ; T states to wait
+$1	=	($0-5-24-(a))/51
+$2	=	$1/256
+$3	=	$1%256
+	.rept	$2-1
+	LD	B,#0
+	CALL	SDELAY
+	.endm
+	LD	B,#$3	; 7
+	CALL	SDELAY	; 17
+	.narg	$5
+.ifeq	$5-4
+$4	=	$0-($1*51+5+24+a)
+	.rept	($4+2)/4
+	NOP
+	.endm
+.endif
+.endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Macros to make using the sound chip easier
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+SNDCLOCK	=	CLKRATE/32
+
+AYREG	=	0xF7
+AYDAT	=	0xF6
+AQSND	=	0xFC
+
+; Convert frequency f/sc Hz into a period for the chip
+; No range checks.  Dont' use illegal values and expect them to work.
+.macro	FREQ	var,f,sc
+	.narg	$1
+.ifeq	$1-3
+var	=	(SNDCLOCK*(sc) + (f/2))/(f)
+.else
+var	=	(SNDCLOCK + (f/2))/(f)
+.endif
+.endm
+
+; Convert time t/sc sec. into an envelope period setting
+; No range checks.  Dont' use illegal values and expect them to work.
+.macro	ENVT	var,t,sc
+	.narg	$1
+.ifeq	$1-3
+var	=	(SNDCLOCK*(t) + (sc)*16/2)/16/(sc)
+.else
+var	=	SNDCLOCK*(t)/16
+.endif
+.endm
+
+; support for minimalizing code: ld a,#<val> (or xor if 0)
+.macro	LDAI	val
+.ifeq	val
+	XOR	A
+.else
+	LD	A,#val
+.endif
+.endm
+
+; Set sound chip register <reg> to Z80 register <dat> (not A; A becomes dat)
+.macro	AYREGR	reg,dat
+	LDAI	reg
+	OUT	(AYREG),A
+.ifidn	dat,#reg
+.else
+	LD	A,dat
+.endif
+	OUT	(AYDAT),A
+.endm
+
+; Set sound chip register <reg> to immediage value <dat> (A becomes dat)
+.macro	AYREG	reg,dat
+	LDAI	reg
+	OUT	(AYREG),A
+.ifne	dat-reg
+	LDAI	dat
+.endif
+	OUT	(AYDAT),A
+.endm
+
+; Set sound chip register pair <reg> to immediage value <dat> (A becomes >dat)
+.macro	AYREG16	reg,dat
+	LDAI	reg
+	OUT	(AYREG),A
+.ifne	reg-<dat
+	LDAI	<dat
+.endif
+	OUT	(AYDAT),A
+.ifne	reg+1-<dat
+	LDAI	reg+1
+.endif
+	OUT	(AYREG),A
+.ifne	reg+1->dat
+	LDAI	>dat
+.endif
+	OUT	(AYDAT),A
+.endm
+
+; Set sound chip register pair <reg> to reg value <h><l> (A becomes <h>)
+.macro	AYREG16R reg,h,l
+	LDAI	reg
+	OUT	(AYREG),A
+	LD	A,l
+	OUT	(AYDAT),A
+	LDAI	reg+1
+	OUT	(AYREG),A
+	LD	A,h
+	OUT	(AYDAT),A
+.endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; The standard Aquarius boot splash.  There is no ROM subroutine you
+; can call, so this replicates the functionality.
+; This was lifted from the QuickDOS disassmbly with minor changes.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+.macro BOOTSPLASH start,label  ; label is optional replacement for BASIC
+	.narg narg$
+	.ifeq 2-narg$
+lab$ = bootsplash$mylab
+	.nchr lablen$,~label~
+	.else
+lab$ = BASIC_MSG
+lablen$ = 5
+	.endif
+bootsplash$:
+	ld de,#SCREEN+10*40+19-(lablen$/2)
+        ld hl,#lab$
+	ld bc,#lablen$
+	ldir
+
+	; Display "Press RETURN..."
+        ld      de,#0x3210   ; screen memory
+        ld      hl,#PRESSRETURN_MSG
+        ld      bc,#PRESSRETURN_LEN
+        ldir
+
+1$:     ld      b,#3       ; color = yellow
+        call    bootsplash$cc
+        ld      b,#2       ; color = green
+        call    bootsplash$cc
+        ld      b,#6       ; color = cyan
+        call    bootsplash$cc
+        jr      1$
+
+.ifeq 2-narg$
+bootsplash$mylab: .ascii ~label~
+.endif
+
+; change splash screen color, wait/check for key press
+bootsplash$cc:
+	ld      hl,#COLOR
+1$:     ld      (hl),b
+        inc     hl         ; fill screen with color
+        ld      a,h
+        cp      #>ENDSCR
+        jr      nz,1$
+        ld      hl,#16384  ; counter
+2$:     call    KEYCHK     ; get key pressed
+        cp      #13        ; <enter>?
+        jr      z,aqinit   ; yes, cold start
+        cp      #3         ; ^C ?
+        jp      z,WARMSTART ; yes, warm start
+        dec     hl         ; counter-1
+        ld      a,h
+        or      l          ; timed out?
+        jr      nz,2$      ; no, keep waiting
+        ret
+.endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Hook into reset vector, for ROMs which use BASIC routines.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+.macro	RINITBASIC
+	ld hl,#rinitbasic$intercept
+	ld (TOKVEC),hl
+	; This is to skip init/overwrite of TOKVEC @INIT_TARGET+3-4
+	; It also skips USR vector @INIT_TARGET+0..2, but who cares?
+	; It also skips the list counter. Who cares?
+	; It also skips the stored value of the xor code.
+	ld hl, #INITVALS+7
+	ld bc, #INITVALS_LEN-7
+	ld de, #INITVALS_TARGET+7
+	jp COLD_ALTINITD
+
+        ; Do normal BASIC boot until warm/cold init complete:
+	;   COLD -> NEW (!!!OVERWRITES TOKVEC!!!)
+	;   WARM -> NEW or OKMAIN (may also do COLD)
+;	jp PRESSRETURN
+
+rinitbasic$intercept:
+	exx
+	pop hl
+	push af
+	ld a,(hl)
+	inc hl
+	ex (sp), hl
+	cp #12 ; NEW ; 0b in disassembly, 0c in actual ROM dump
+	jr z,1$
+	cp #2 ; OKMAIN
+	jr z,1$
+	push hl
+	exx
+	pop af
+	ret
+
+1$:	ld hl,#TOKVEC_DEF ; Disable custom TOKSIZ (not needed/too slow)
+	ld (TOKVEC),hl
+	; I hate to do this, but there's no other wy to detect Ext BASIC
+	ld de,#MAGIC_STR
+	ld hl,#AQBASICEXTSTART+5
+	ld bc,#6
+2$:	ld a,(de)
+	inc de
+	cpd
+	jp po,3$
+	jr z,2$
+	jr rinitbasic$end
+3$:	ld hl,#EBTOKVEC_DEF
+	ld (TOKVEC),hl
+	; the rest is taken from a disassembly of Extended BASIC
+	; I did not bother replacing symbols or commenting.
+	ld hl,#0x163
+	ld a,(hl)
+	cp #0x79
+	jr nz,le0ach
+	dec hl
+	dec hl
+	dec hl
+le0ach:
+	call 0xe9d
+	ld hl,#0
+	ld (0x3931),hl
+	ld hl,#0x704
+	ld (0x3900),hl
+	ld hl,#0x3948
+	ld (hl),#0
+	inc hl
+	ld (0x384f),hl
+	call 0xbbe
+	ld a,#0xc3
+	ld (0x390b),a
+	ld (0x390e),a
+	ld (0x393e),a
+	xor a
+	ld (0x3933),a
+	ld (0x3934),a
+	ld (0x3935),a
+rinitbasic$end:
+.endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; For tape loading via arrays (much faster than DATA statements)
+; These ORGs assume use of ihx2bin -t to create the tape.
+; Started w/ USR(V), where V is load address
+; (actually, V is ignored, as it takes more time to compute from V
+; than to just read ARYTAB)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; maybe start higher in case of other ROMS
+BASIC_ASTART = 0x396C
+EBASIC_ASTART = BASIC_ASTART+0x48
+
+.macro	ABASIC_MV start,end
+abasic_mv$:
+	; call GETDE ; get start addr (includes 7 byte offset)
+	ld de,(ARYTAB) ; get start addr (excludes 7 byte offset)
+	ld hl,#end-1-abasic_mv$+7
+	add hl,de ; hl = act_start-want_start + end-1
+	ld de,#end-1
+	ld bc,#end-.-8 ; 5 bytes in ldbc,#+lddr+jp
+	lddr
+	jp start
+.endm
+.list
