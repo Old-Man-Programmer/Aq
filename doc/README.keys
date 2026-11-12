@@ -1,0 +1,49 @@
+Here are some sample SDL2 key names.  They are all case-insensitive.
+Is there a list on the 'net?  Who knows?
+
+Single-character ASCII characters have the name on their keycap.
+
+ Return Escape Backspace Tab Space CapsLock NumLock
+ PrintScreen ScrollLock Pause Insert Home PageUp Delete End PageDown
+ Right Left Down Up
+ F1 .. F24
+ Application Power Execute Help Menu Select Stop Again Undo Cut
+ Copy Paste Find Mute VolumeUp VolumeDown AltErase SysReq Cancel
+ Clear Prior Return Separator Out Oper CrSel ExSel ThousandsSeparator
+ DecimalSeparator CurrencyUnint CurrencySubunit BrightnessDown
+ BrightnessUp DisplaySwitch KBDIllumToggle KBDIllumDown KBDIllumUp
+ Eject Sleep App1 App2 AudioRewind AudioFastForward SoftLeft SoftRight
+ Call EndCall
+
+Numeric Keypad keys are two space-separated words, the first of which
+is Keypad (e.g. "Keypad 1").  Except for one, which is 3 words:
+"Keypad = (AS400)"
+ 0 .. 9 . / * - + Enter = , 00 000 ( ) { } Tab Backspace A B C D E F
+ XOR ^ % < > & && | || : # Space @ ! MemStore MemRecall MemClear
+ MemAdd MemSubtract MemMultiply MemDivide +/- Clear ClearEntry
+ Binary Octal Decimal Hexadecimal ModeSwitch AUdioNext AudioPrev
+ AudioStop AudioPlay AudioMute AudioSelect WWW Mail Calculator
+ Computer
+
+And here are a few more with multiple words:
+  "Clear / Again" "Left Ctrl" "Left Shift" "Left Alt" "Left GUI"
+  "Right Ctrl" "Right Shift" "Right Alt" "Right GUI"
+  "Ac Search" "AC Home" "AC Back" "AC Forward" "AC Stop" "AC Refresh"
+  "AC Bookmarks"
+
+SDL may change these at any time, without notice, as far as I can
+tell.  The following changes are made based on OS:
+
+  "Left Alt" -> "Left Option" (Mac)
+  "Right Alt" -> "Right Option" (Mac)
+  "Left GUI" -> "Left Command" (Mac), "Left Windows" (Windows)
+  "Right GUI" -> "Right Command" (Mac), "Right Windows" (Windows)
+  "Application" -> "Menu" (Mac, Windows)
+
+This means that your config file will only work on one OS, and maybe
+only one version of SDL.  SDL warns of this, but provides no stable
+alternatives.  Also, SDL uses linear searches, and I do not have the
+patience to extract the names into a hash table or sorted array for
+faster searching. Luckily, modern computer speeds have made that
+inefficiency irrelevant, and parsing only happens (every) program
+startup and config change.

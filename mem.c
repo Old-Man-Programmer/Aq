@@ -29,12 +29,15 @@ uint8_t (*mem_writer[64*K])(uint16_t addr, uint8_t data);
 
 static uint8_t *loadrom(const char *file, off_t *size)
 {
-  int fd = open(file, O_RDONLY);
+  int fd = open_file(file, "roms");
   struct stat st;
   uint8_t *rom;
   int r;
 
-  if (fd < 0) return NULL;
+  if (fd < 0) {
+    fprintf(stderr,"Unable to open ROM file %s [%s]\n", file, strerror(errno));
+    return NULL;
+  }
 
   fstat(fd, &st);
   rom = malloc(st.st_size);
@@ -43,6 +46,7 @@ static uint8_t *loadrom(const char *file, off_t *size)
     fprintf(stderr,"Short read reading %s: %d != %ld\n", file, r, st.st_size);
     exit(1);
   }
+  close(fd);
   *size = st.st_size;
   return rom;
 }
@@ -63,10 +67,12 @@ uint8_t ram_writer(uint16_t addr, uint8_t data)
   return (_mem[addr] = data);
 }
 
-uint8_t rom_writer(uint16_t addr, uint8_t data)
+uint8_t rom_writer(uint16_t addr, _U uint8_t data)
 {
   return _mem[addr];
 }
+
+const char *_mainrom, *_charrom, *_ebrom;
 
 // Too many magic numbers.  Should make #defines for them all.
 int initmem()
@@ -80,28 +86,40 @@ int initmem()
     mem_writer[i] = ram_writer;
   }
 
-  _cdata = loadrom(ROMS "Aquarius-chars.rom", &size);
-  if (_cdata == NULL) {
-    fprintf(stderr,"Unable to open ROM file %s [%s]\n", ROMS "Aquarius-chars.rom", strerror(errno));
+  add_default_str("charrom", DEFAULT_CHARROM);
+  _charrom = config_str("charrom");
+  if(!_charrom || !*_charrom) {
+    fputs("charrom must be non-empty\n", stderr);
     exit(1);
   }
+  _cdata = loadrom(_charrom, &size);
+  if (_cdata == NULL)
+    exit(1);
 
   /* Map roms onto pages */
-  basic = loadrom(ROMS "radofin.bin", &size);
-  if (basic == NULL) {
-    fprintf(stderr,"Unable to open ROM file %s [%s]\n", ROMS "radofin.bin", strerror(errno));
+  add_default_str("basicrom", DEFAULT_MAINROM);
+  _mainrom = config_str("basicrom");
+  if(!_mainrom || !*_mainrom) {
+    fputs("basicrom must be non-empty\n", stderr);
     exit(1);
   }
+  basic = loadrom(_mainrom, &size);
+  if (basic == NULL)
+    exit(1);
   memcpy(_mem+0x0000, basic, size);
 //   for(i=0; i < size; i++) {
 //     mem_writer[i+0x0000] = rom_writer;
 //   }
+  add_default_str("ebrom", DEFAULT_EBROM);
+  _ebrom = config_str("ebrom");
+  if(!_ebrom || !*_ebrom) {
+    fputs("ebrom must be non-empty; set use_ebrom to fasle to disable\n", stderr);
+    exit(1);
+  }
   if (_extendedbasic) {
-    basic = loadrom(ROMS "ebasic.bin", &size);
-    if (basic == NULL) {
-      fprintf(stderr,"Unable to open ROM file %s [%s]\n", ROMS "ebasic.bin", strerror(errno));
+    basic = loadrom(_ebrom, &size);
+    if (basic == NULL)
       exit(1);
-    }
     memcpy(_mem+0x2000, basic, size);
     for(int i=0; i < size; i++) {
       mem_writer[i+0x2000] = rom_writer;
@@ -109,20 +127,13 @@ int initmem()
   }
 
   if (_gamerom) {
-    if (! (game = loadrom(_gamerom, &size))) {
-      char path[PATH_MAX];
-      sprintf(path, "%s/%s", ROMS, _gamerom);
-      game = loadrom(path, &size);
-    }
-    if (game) {
-      _gameromstart = 0xFFFF-(size-1);
-      memcpy(_mem+_gameromstart, game, size);
-      for(i=0; i < size; i++) {
-	mem_writer[i+_gameromstart] = rom_writer;
-      }
-    } else {
-      fprintf(stderr,"Unable to open game ROM [%s]\n", strerror(errno));
+    game = loadrom(_gamerom, &size);
+    if (!game)
       exit(1);
+    _gameromstart = 0xFFFF-(size-1);
+    memcpy(_mem+_gameromstart, game, size);
+    for(i=0; i < size; i++) {
+      mem_writer[i+_gameromstart] = rom_writer;
     }
   }
 

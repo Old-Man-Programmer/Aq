@@ -14,7 +14,7 @@ start:	AYREG16	2,BSND	  ; Period B
 	LD	HL,#11*256
 	LD	DE,#(11*256-4*256+1)
 1$:	AYREG16R 0,H,L	  ; Period A
-	SDELAY	3,1000,64
+	LDELAY	3,1000,64
 	DEC	HL
 	DEC	DE
 	LD	A,D
@@ -23,7 +23,7 @@ start:	AYREG16	2,BSND	  ; Period B
 	LD	HL,#9*256
 	LD	DE,#(9*256-3*256+1)
 2$:	AYREG16R 0,H,L	  ; Period A
-	SDELAY	3,1000,64
+	LDELAY	3,1000,64
 	DEC	HL
 	DEC	DE
 	LD	A,D
@@ -32,7 +32,7 @@ start:	AYREG16	2,BSND	  ; Period B
 	LD	HL,#6*256
 	LD	DE,#(6*256-256+1)
 3$:	AYREG16R 0,H,L	  ; Period A
-	SDELAY	6,1000,64
+	LDELAY	6,1000,64
 	DEC	HL
 	DEC	DE
 	LD	A,D
@@ -42,4 +42,4 @@ start:	AYREG16	2,BSND	  ; Period B
 	AYREG	9,0	  ; Volume B disable
 	RET
 
-	SDELAY_SUB
+	LDELAY_SUB

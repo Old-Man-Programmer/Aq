@@ -17,6 +17,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #include "Aq.h"
+#include <GL/gl.h>
 
 /* Color codes:
   +---------+-----------+  +---------+------------+
@@ -64,15 +65,16 @@ uint32_t _colors[] = {
   0xFFF4F493, 0xFF78D778, 0xFFBD5B5D, 0xFF000000
 };
 
-static int _bordercolor, _cbgcolor = 0;
+uint8_t _bordercolor;
 int _xorigin, _yorigin, _screen_w, _screen_h, _border, _scale = 5;
 static int _texw, _texh;
+#ifndef USE_QT
 SDL_Window *_window;
-SDL_Renderer *_renderer;
-SDL_Texture *_texture;
+SDL_GLContext _gl_context;
+#endif
+GLuint _texture, _vlist;
 uint32_t *_screen;
 uint8_t *_cdata;
-bool _needsupdate = false;
 
 void color(uint8_t data, uint32_t *fg, uint32_t *bg)
 {
@@ -108,8 +110,6 @@ void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg)
       putpixel(x+xoff, y+yoff, (*cbyte & cbit)? fg : bg);
     }
   }
-
-  _needsupdate = true;
 }
 
 void fillrect(int x, int y, int width, int height, uint32_t bg)
@@ -121,50 +121,163 @@ void fillrect(int x, int y, int width, int height, uint32_t bg)
   }
 }
 
-void screen_update(void)
+void gl_render(int w, int h)
 {
-  if (_needsupdate) {
-    SDL_UpdateTexture(_texture, NULL, _screen, _texw*sizeof(uint32_t));
-    SDL_RenderCopy(_renderer, _texture, NULL, NULL);
-    SDL_RenderPresent(_renderer);
-    _needsupdate = false;
-  }
+#ifndef USE_IMGUI
+    uint32_t fg, bg, dw = w, dh = h;
+    color(_bordercolor, &fg, &bg);
+    glViewport(0, 0, w, h);
+#define col_b2f(c) (float)((c)&0xff)/0xff
+    glClearColor(col_b2f(bg>>16), col_b2f(bg>>8), col_b2f(bg), 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if(dw > dh * 4 / 3)
+      dw = dh * 4 / 3;
+    else if(dh > dw * 3 / 4)
+      dh = dw * 3 / 4;
+    glViewport((w - dw) / 2, (h - dh) / 2, dw, dh);
+#endif
+    // Since IMGUI preserves bound texture, it's not necessary to
+    // rebind every time
+#ifdef USE_QT
+    glBindTexture(GL_TEXTURE_2D, _texture);
+#endif
+    // glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_TRUE); // if big-endian
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, _texw, _texh, 0,
+		 GL_BGRA, GL_UNSIGNED_BYTE, _screen);
+#ifndef USE_IMGUI
+    glCallList(_vlist);
+    // Unbind texture; not sure why I'd want to
+    // glBindTexture(GL_TEXTURE_2D, 0);
+#else
+    imgui_update(w, h, _texture);
+#endif
 }
 
-void screen_init(void)
+#ifndef USE_QT
+static volatile bool _continue_updating = true;
+
+static void *screen_update(_U void *data)
 {
+  SDL_GL_MakeCurrent(_window, _gl_context);
+  while(_continue_updating) {
+    int w, h;
+    SDL_GL_GetDrawableSize(_window, &w, &h);
+    gl_render(w, h);
+    glFinish(); // Is this necessary?  Done by SwapWindow()?
+    SDL_GL_SwapWindow(_window);
+    pthread_testcancel();
+  }
+  // not reached, but w/o optimization, gcc still complains
+  return NULL;
+}
+
+static pthread_t _update_thread;
+#endif
+
+void screen_init()
+{
+  if(_screen)
+    return;
   _screen_w = (40*8);
   _screen_h = (24*8);
   _border = 10;
   _xorigin = _yorigin = _border;
   _texw = _screen_w+(_border*2);
   _texh = _screen_h+(_border*2);
+  _screen = malloc((_texw*_texh)*sizeof(uint32_t));
+  memset(_screen, 128, (_texw*_texh)*sizeof(uint32_t));
 
+#ifdef USE_QT
+  qt_init(_texw*_scale, _texh*_scale);
+#else
+#ifdef USE_IMGUI
+  imgui_glinit();
+#endif
   _window = SDL_CreateWindow("Aquarius", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                             _texw*_scale, _texh*_scale, SDL_WINDOW_RESIZABLE);
+                             _texw*_scale, _texh*_scale,
+			    SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
   if (_window == NULL) {
     fprintf(stderr, "Couldn't get a window [%s]\n", SDL_GetError());
     exit(1);
   }
-  _renderer = SDL_CreateRenderer(_window, -1, 0);
-  if (_renderer == NULL) {
-    fprintf(stderr, "Couldn't get a renderer [%s]\n", SDL_GetError());
+  if(_fullscreen)
+    set_fullscreen();
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+  _gl_context = SDL_GL_CreateContext(_window);
+  if (_gl_context == NULL) {
+    fprintf(stderr, "Couldn't get a GL context [%s]\n", SDL_GetError());
     exit(1);
   }
+  SDL_GL_MakeCurrent(_window, _gl_context);
+  SDL_GL_SetSwapInterval(1); // Enable vsync
+#ifdef USE_IMGUI
+  imgui_init(_scale);
+#endif
+  gl_init();
 
-  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");  // make the scaled rendering look smoother.
-  SDL_RenderSetLogicalSize(_renderer, _texw, _texh);
+  SDL_GL_MakeCurrent(_window, NULL);
 
-  _texture = SDL_CreateTexture(_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-                               _texw, _texh);
-  if (_texture == NULL) {
+  if(pthread_create(&_update_thread, NULL, screen_update, NULL)) {
+    perror("screen thread");
+    exit(1);
+  }
+#endif
+}
+
+void gl_init()
+{
+  glDisable(GL_CULL_FACE);
+  glEnable(GL_TEXTURE_2D);
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0.0, 1.0, 1.0, 0.0, 0.0, 1.0);
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+
+  glGenTextures(1, &_texture);
+  if (!_texture) {
+    // FIXME: get GL error
     fprintf(stderr, "Couldn't get a texture [%s]\n", SDL_GetError());
     exit(1);
   }
+  glBindTexture(GL_TEXTURE_2D, _texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  // make the scaled rendering look less blurry.
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-  _screen = malloc((_texw*_texh)*sizeof(uint32_t));
-  memset(_screen, 128, (_texw*_texh)*sizeof(uint32_t));
-  SDL_UpdateTexture(_texture, NULL, _screen, _texw*sizeof(uint32_t));
+#ifndef USE_IMGUI
+  _vlist = glGenLists(1);
+  glNewList(_vlist, GL_COMPILE);
+  glBegin(GL_TRIANGLE_STRIP);
+  glTexCoord2f(0.0, 0.0);
+  glVertex3i(0, 0, 0);
+  glTexCoord2f(1.0, 0.0);
+  glVertex3i(1.0, 0, 0);
+  glTexCoord2f(0.0, 1.0);
+  glVertex3i(0, 1.0, 0);
+  glTexCoord2f(1.0, 1.0);
+  glVertex3i(1.0, 1.0, 0);
+  glEnd();
+  glEndList();
+  glFinish();
+#endif
+}
+
+void screen_shutdown()
+{
+#ifndef USE_QT
+  // A generic cancel might cause locking problems in SDL
+  // pthread_cancel(_update_thread);
+  // so use a loop terminator flag
+  _continue_updating = false;
+  pthread_join(_update_thread, NULL);
+  SDL_GL_DeleteContext(_gl_context);
+  SDL_DestroyWindow(_window);
+#endif
 }
 
 #define SCREEN	0x3028
@@ -186,7 +299,6 @@ uint8_t screen_border(uint16_t addr, uint8_t data)
       writechar(c,r,load(SCREEN+pos), fg, bg);
     }
   }
-  _needsupdate = true;
   return data;
 }
 

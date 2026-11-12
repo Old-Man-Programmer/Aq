@@ -8,7 +8,7 @@
 	LD      DE,#1
 LOOP:	LD      A,L       ; 4
 	OUT     (AQSND),A   ; 11
-	SDELAY	1000000/880,1000000,42,t
+	SDELAY  1000000/880,1000000,42,1
         SBC     HL,DE     ; 15
 	JR      NZ,LOOP   ; 12/7
         RET

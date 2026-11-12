@@ -22,9 +22,6 @@ struct ports port[256];
 
 keymode_t _keymode = TIMER;
 int _keydown=0;
-uint8_t _keyrow=0;
-
-int _key = 0, _ctrl = 0, _shift = 0, _capslk = 0;
 
 #define CTRL	1
 #define SHIFT	2
@@ -51,7 +48,7 @@ ROW/COL:
 20 | CTL a  x  f  b  j  ,  .  bit5  223  0xDF
 */
 
-char keyrows[6][8] = {
+const char keyrows[6][8] = {
   {'2', '3', '5', '6', '8', '9', '-', '='},
   {'w', 'e', 't', 'y', 'i', 'o', '/', '\b'},
   {'1', 's', '4', 'g', '7', 'k', '0', ':'},
@@ -60,7 +57,44 @@ char keyrows[6][8] = {
   {'x', 'a', 'x', 'f', 'b', 'j', ',', '.'}
 };
 
-struct keyscan _keys[] = {
+#if 0
+// An int for every key, coutning number of down events
+// Or that was the idea.  It's too hard to track for now.
+static unsigned keypressed[8][6] = {};
+#endif
+// A bit for every key, for faster access to keypressed[]
+static uint64_t keymatrix = 0ULL;
+// A bit for every key, with ghosting
+// In other words, for every key with another key in the same column (c) and
+// same row (r), the key at (c, r) is set as well.
+static volatile uint64_t ghostkeys = 0ULL;
+
+static void update_ghost(void)
+{
+#if 0
+  uint64_t gk = keymatrix, n = gk;
+  int k = -1; // last one done
+  for(int i = 0; i < 8; i++, n >>= 8) {
+    if(i == k)
+      continue;
+    uint64_t m = gk, on = n;
+    for(int j = 0; j < 8; j++, m >>= 8) {
+      uint8_t mm = m & 0xff;
+      if(i != j && (n & mm) && (n & mm) != mm)
+	n |= mm;
+    }
+    if(on != n) {
+      gk |= n << (8 * (k = i));
+      i = -1;
+    }
+  }
+  ghostkeys = gk;
+#else
+  ghostkeys = keymatrix;
+#endif
+}
+
+const struct keyscan _keys[] = {
   {0,0x00,0x00,0},      {0,0x20,0x80,0},        {0,0x10,0x80,0},        {0,0x00,0x00,0},
   {'\001',0x20,0x40,1}, {'\002',0x20,0x08,1},   {'\003',0x10,0x10,1},   {'\004',0x10,0x20,1},
   {'\005',0x02,0x40,1}, {'\006',0x20,0x10,1},   {'\007',0x04,0x10,1},   {'\b',0x02,0x01,0},
@@ -95,13 +129,83 @@ struct keyscan _keys[] = {
   {'y',0x02,0x10,0},    {'z',0x08,0x40,0},      {'{',0x01,0x08,2},      {'|',0x00,0x00,0},
   {'}',0x01,0x04,2},    {'~',0x00,0x00,0},      {'\127',0x0B,0x01,0},
   {SDLK_BACKSPACE,0x02,0x01,0},
+#if 0
+  {SDLK_LSHIFT,0,0,2}, {SDLK_RSHIFT,0,0,2},
+  {SDLK_LCONTROL,0,0,1}, {SDLK_RCONTROL,0,0,1},
+#else
+  {256,0,0,2}, {257,0,0,1},
+#endif
   {-1,0,0,0}
 };
 
-int fixkeys(int key, int *shift, int *ctrl)
+void dokey(int keyno, Uint16 mod, bool press)
 {
-//  static char *atable = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-  static char *mtable   = "       \"    <_>?)!@#$%^&*( : + ?@                          {|}  ~";
+  // I have no idea what to do with capslock.
+  bool ctrl = !!(mod & KMOD_CTRL),
+       shift = !!(mod & KMOD_SHIFT),
+       capslk = !!(mod & KMOD_CAPS);
+  keyno = findkey(fixkeys(keyno, &shift, &ctrl));
+  if (capslk && (keyno >= 'a' + 3 && keyno <= 'z' + 3))
+      shift = !shift;
+  ctrl |= _keys[keyno].modkey == 1;
+  shift |= _keys[keyno].modkey == 2;
+  // Aquarius has real trouble with more than one key pressed at once.
+  keymatrix = 0;
+
+#define KM(c, r) ((uint64_t)(r) << ((c) * 8))
+
+  if(shift /* && press */)
+    keymatrix |= KM(7, 0x10);
+  else
+    keymatrix &= ~(KM(7, 0x10));
+  if(ctrl /* && press */)
+    keymatrix |= KM(7, 0x20);
+  else
+    keymatrix &= ~(KM(7, 0x20));
+  for(int i = 0, cm = 1; i < 8; i++, cm <<= 1) {
+#if 0
+    if(cm == 0x80) {
+      // FIXME: key's down modifier should be used instead of its
+      // up modifier when released
+      // For now, just set mask (above) w/o regard to count
+      if(shift)
+	keypressed[i][4] += press ? 1 : -1;
+      if(ctrl)
+	keypressed[i][5] += press ? 1 : -1;
+    }
+#endif
+    if(_keys[keyno].col & cm) {
+#if 0
+      // FIXME: supporting multiple sources is too hard to track.
+      // For example, from an analog event, there is a press every time the
+      // analog value changes (very often), but only one release.  There may
+      // also be repeated up events for key repeat.  Once these are dealt
+      // with, maybe I'll look into this again.
+      for(int j = 0, rm = 1; j < 6; j++, rm <<= 1)
+	if(_keys[keyno].row & rm) {
+	  keypressed[i][j] += press ? 1 : -1;
+	  if(keypressed[i][j])
+	    keymatrix |= KM(i, rm);
+	  else
+	    keymatrix &= ~KM(i, rm);
+	  break;
+	}
+#else
+      if(press)
+	keymatrix |= KM(i, _keys[keyno].row);
+      else
+	keymatrix &= ~KM(i, _keys[keyno].row);
+      break;
+#endif
+    }
+  }
+  update_ghost();
+}
+
+int fixkeys(int key, bool *shift, bool *ctrl)
+{
+//  static const char atable[] = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+  static const char mtable[]   = "       \"    <_>?)!@#$%^&*( : + ?@                          {|}  ~";
   if (*ctrl) return key;
   if (*shift) {
     if (key >= 32 && key <= 96 && mtable[key-32] != ' ') key = mtable[key-32];
@@ -140,31 +244,28 @@ static void drain(void)
 
 static uint8_t kb_read(uint8_t column)
 {
-  struct keyscan *k;
+  const struct keyscan *k;
   uint8_t d = 0;
 
   column = ~column;
   if (_nkeys) {
     k = &_keys[_keybuf[0]];
-    if (k->col & column) {
+    if (k->col & column)
       d |= k->row;
-      if (_keymode == SCAN) _keydown--;
-    }
     if (k->modkey && (_keys[k->modkey].col & column)) d |= _keys[k->modkey].row;
     if (_keymode == SCAN) {
-      if (d || (k->ch == 0 && column == 0xFF)) _keydown--;
+      if(column == 0xff) _keydown--;
     }
-    if (_keydown <= 0) drain();
+    if (_keydown <= 0) {
+      drain();
+      d = 0;
+    }
   } else {
-    if (_key) {
-      k = &_keys[(int)_key+3];
-      if (k->col & column) d |= k->row;
-      if (_capslk && (_key >= 'a' && _key <= 'z') && (column & 0x80)) d |= 0x10;
-    }
-    if (_shift && (column & 0x80)) d |= 0x10;
-    if (_ctrl && (column & 0x80)) d |= 0x20;
+    uint64_t gk = ghostkeys;
+    for(int col = 0, mask = 1; col < 8; col++, mask <<= 1, gk >>= 8)
+      if(column & mask)
+	d |= gk & 0xff;
   }
-
   return ~d;
 }
 
@@ -261,4 +362,5 @@ void io_init(void)
   port[0xFF].writer = sw_lock;
 
   aqsnd_reset();
+  start_sdl_events();
 }

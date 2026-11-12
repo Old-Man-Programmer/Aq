@@ -23,6 +23,7 @@
 #ifndef AQSND_H
 #define AQSND_H
 #include <stdint.h>
+#include <stdbool.h>
 
 void aqsnd_reset(void); // call @ startup & system reset
 void aqsnd_write_fc(uint8_t val); // beeps and tapes (just bit 0)
@@ -40,5 +41,8 @@ void aqsnd_process(void); // bring sound state up-to-date
 // a simple internal volume control.  Set to amount to attenuate generated
 // samples by (i.e. logarithmic vol control, 0 = max, 15 = off, 13 = min)
 extern int _vol_shift;
+
+// Automatic prompt for new tape file via asktape()
+extern bool _tape_ask_save, _tape_ask_load, _tape_ask_end;
 
 #endif

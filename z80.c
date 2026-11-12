@@ -24,6 +24,8 @@ struct regset _reg, _alt;
 unsigned long _totclk = 0;
 
 unsigned int _turbo = 0;
+float turbo_rate = 0.0;
+volatile bool _doreset = false;
 
 uint8_t _I, _R, _IFF1, _IFF2;	// Interrupt / Memory Refresh / Interrupt flip-flops 1 and 2
 uint16_t _IX, _IY;	// Index registers
@@ -544,6 +546,7 @@ static int OUTX(int dir)
   return 16;
 }
 
+#if 0
 static char *status(uint8_t F)
 {
   static char f[8];
@@ -556,6 +559,7 @@ static char *status(uint8_t F)
   f[6] = 0;
   return f;
 }
+#endif
 
 static void pinstr(uint16_t PC, int pfx, uint8_t d, const char *instr)
 {
@@ -597,14 +601,16 @@ static void pinstr(uint16_t PC, int pfx, uint8_t d, const char *instr)
 static void run()
 {
   struct timeval t;
-  unsigned long cur, prev;
-  int cycles = 0, clocks = 0, pixclocks = 0;
+  time_t turbo_sec;
+  unsigned long cur, prev, turbo_clks = 0;
+  int cycles = 0, clocks = 0;
   uint16_t addr;
   uint8_t l, h, o, n;
   int halted = false;
 
   gettimeofday(&t, NULL);
   prev = t.tv_sec*1000000+t.tv_usec;
+  turbo_sec = t.tv_sec;
 
   while(1) {
     _R = (((_R&0x7F)+1)&0x7F) | (_R&0x80);
@@ -1958,43 +1964,16 @@ static void run()
 
     clocks += cycles;
     _totclk += cycles;
-    pixclocks += cycles;
 #define PROCESS_RATE 1000
 
-    if (clocks > (CLKRATE+(PROCESS_RATE/2))/PROCESS_RATE) {
-      SDL_Event event;
-      static int keydown = 0;
-      while(SDL_PollEvent(&event)) {
-	switch(event.type) {
-	  case SDL_KEYDOWN:
-	    if (event.key.keysym.sym <= 128) {
-	      keydown = _key = event.key.keysym.sym;
-	      _ctrl = event.key.keysym.mod & KMOD_CTRL;
-	      _shift = event.key.keysym.mod & KMOD_SHIFT;
-	      _capslk = event.key.keysym.mod & KMOD_CAPS;
-	      _key = fixkeys(_key, &_shift, &_ctrl);
-	    }
-	    if (event.key.keysym.sym == SDLK_F12) quit();
-	    if (event.key.keysym.sym == SDLK_F11) return;
-	    break;
-	  case SDL_KEYUP:
-	    if (event.key.keysym.sym == keydown) _key = 0;
-	    if (event.key.keysym.mod & KMOD_CTRL) _ctrl = 0;
-	    if (event.key.keysym.mod & KMOD_SHIFT) _shift = 0;
-	    if (event.key.keysym.mod & KMOD_CAPS) _capslk = 0;
-	    if (event.key.keysym.sym == SDLK_F1) {
-	      _turbo ^= TURBO_KEY;
-	      SDL_SetWindowTitle(_window, _turbo? "Aquarius (turbo)" : "Aquarius");
-	    }
-	    break;
-	  case SDL_QUIT:
-	    quit();
-	    break;
-	}
-      }
-      if (pixclocks > VSCLKS) {
-	if (!_batchmode) screen_update();
-	pixclocks -= VSCLKS;
+    if (!_batchmode && (clocks > (CLKRATE+(PROCESS_RATE/2))/PROCESS_RATE)) {
+      // These are the only user-initiated events processed here:
+      //  - quit
+      //  - reset
+      pthread_testcancel();
+      if(_doreset) {
+	_doreset = false;
+	break;
       }
       aqsnd_process();
 
@@ -2002,9 +1981,15 @@ static void run()
       gettimeofday(&t, NULL);
       cur = t.tv_sec*1000000+t.tv_usec;
       long diff = 1000000/PROCESS_RATE - (cur - prev);
-      if(_turbo)
+      if(_turbo) {
 	prev = cur;
-      else if(diff < -20000) { /* don't fall behind more than 20ms */
+	if (t.tv_sec > turbo_sec) {
+	  turbo_sec = t.tv_sec;
+	  turbo_rate = (_totclk - turbo_clks) / (float)CLKRATE;
+	  win_title("Aquarius");
+	  turbo_clks = _totclk;
+	}
+      } else if(diff < -20000) { /* don't fall behind more than 20ms */
 	fprintf(stderr, "lost %ldus\n", -diff);
 	prev = cur;
       } else
@@ -2030,12 +2015,13 @@ static void run()
       quit();
     }
   }
-
 }
 
 void reset()
 {
   do {
+    initmem();
+    io_init();
     _PC = 0x0000;
     _SP = 0xFFFF;
     _reg.AF = 0xFFFF;
@@ -2048,8 +2034,6 @@ void reset()
     _imode = 0;
 
     _I = _R = 0;
-
-    aqsnd_reset();
 
     run();
   } while (1);

@@ -272,17 +272,29 @@ LDELAY:	EX      (SP),HL    ; 19
         RET                ; 10
 .endm
 
-.macro	LDELAY	t,sc,a,ex ; ex = non-blacnk: exactish: pad w/ NOP
-	; cc=CLKRATE
+; convenience macro to compute BC.  parameters:
+; sc = scale
+; t = time in sec. multiplied by sc
+; in other words, time = ~(t/sc) sec.
+ ; ex = non-blank to use NOP for fine tuning ("exact")
+ ; a = adjust time by given # of clocks
+.macro	LDELAY	t,sc,a,ex
 	; define ldl(t,a)=(cc*t-5-27-a)/74
+	; 
 $0	=	CLKRATE*(t)/(sc) ; T states to wait
-$1	=	($0-5-27-(a))/74
-$2	=	$1/85536
+$1	=	($0-5-27-(a))/74 ; iterations to wait (FIXME: 0 if <0)
+	; 27 is time for load+call
+	; a is fine adjust added by NOPs
+	; 5? should be time to skip out of loop
+	; 74? should be total time per loop
+$2	=	$1/65536
 $3	=	$1%65536
+.ifne   $2
 	.rept	$2-1
 	LD	BC,#0
 	CALL	LDELAY
 	.endm
+.endif
 	LD	BC,#$3	; 10
 	CALL	LDELAY	; 17
 	.narg	$5
@@ -295,26 +307,37 @@ $4	=	$0-($1*74+a+27+5)
 .endm
 
 .macro SDELAY_SUB
-	; 51*B-5+14(+17 for call,+7 for LDB)
+	; LD B, #DEL  ; 7
+	; CALL SDELAY ; 17
+	; 51*B-5 clocks (+24) (B=0 means B=256)
+	; Thus wait range is 70T..13075T
+	; assuming 0 wait states
 SDELAY:	EX      (SP),HL    ; 19
         EX      (SP),HL    ; 19
 	DJNZ    SDELAY     ; 13/8
         RET                ; 10
 .endm
 
-.macro	SDELAY	t,sc,a,ex ; ex = non-blacnk: exactish: pad w/ NOP
-	; cc=CLKRATE
-	; define sdl(t,a)=(cc*t-5-24-a)/51
+.macro	SDELAY	t,sc,a,ex
+        ; ex = optional;non-blacnk: exactish: pad w/ NOP
+	; sdl(t,a)=(CLKRATE*t-5-24-a)/51
 $0	=	CLKRATE*(t)/(sc) ; T states to wait
-$1	=	($0-5-24-(a))/51
+$2      =       5+24+(a) 
+.ifgt $0-$2
+$1	=	($0-$2)/51
+.else
+$1      = 0
+.endif
+; since this is for short delays, assume
+; high byte of delay (C) is small.
 $2	=	$1/256
 $3	=	$1%256
-	.rept	$2-1
-	LD	B,#0
+         INC    C ; do remainder, then use B=0 (256) for remaining
+$8:
 	CALL	SDELAY
-	.endm
-	LD	B,#$3	; 7
-	CALL	SDELAY	; 17
+        DJNZ $8 ; iterate b times (0 is 256)
+	DEC C ; iterate C (high + 1) times
+	JR NZ,$8
 	.narg	$5
 .ifeq	$5-4
 $4	=	$0-($1*51+5+24+a)
@@ -443,13 +466,13 @@ bootsplash$:
         ld      bc,#PRESSRETURN_LEN
         ldir
 
-1$:     ld      b,#3       ; color = yellow
+$1:     ld      b,#3       ; color = yellow
         call    bootsplash$cc
         ld      b,#2       ; color = green
         call    bootsplash$cc
         ld      b,#6       ; color = cyan
         call    bootsplash$cc
-        jr      1$
+        jr      $1
 
 .ifeq 2-narg$
 bootsplash$mylab: .ascii ~label~
@@ -458,13 +481,13 @@ bootsplash$mylab: .ascii ~label~
 ; change splash screen color, wait/check for key press
 bootsplash$cc:
 	ld      hl,#COLOR
-1$:     ld      (hl),b
+$1:     ld      (hl),b
         inc     hl         ; fill screen with color
         ld      a,h
         cp      #>ENDSCR
-        jr      nz,1$
+        jr      nz,$1
         ld      hl,#16384  ; counter
-2$:     call    KEYCHK     ; get key pressed
+$2:     call    KEYCHK     ; get key pressed
         cp      #13        ; <enter>?
         jr      z,aqinit   ; yes, cold start
         cp      #3         ; ^C ?
@@ -472,7 +495,7 @@ bootsplash$cc:
         dec     hl         ; counter-1
         ld      a,h
         or      l          ; timed out?
-        jr      nz,2$      ; no, keep waiting
+        jr      nz,$2      ; no, keep waiting
         ret
 .endm
 
@@ -504,27 +527,27 @@ rinitbasic$intercept:
 	inc hl
 	ex (sp), hl
 	cp #12 ; NEW ; 0b in disassembly, 0c in actual ROM dump
-	jr z,1$
+	jr z,$1
 	cp #2 ; OKMAIN
-	jr z,1$
+	jr z,$1
 	push hl
 	exx
 	pop af
 	ret
 
-1$:	ld hl,#TOKVEC_DEF ; Disable custom TOKSIZ (not needed/too slow)
+$1:	ld hl,#TOKVEC_DEF ; Disable custom TOKSIZ (not needed/too slow)
 	ld (TOKVEC),hl
 	; I hate to do this, but there's no other wy to detect Ext BASIC
 	ld de,#MAGIC_STR
 	ld hl,#AQBASICEXTSTART+5
 	ld bc,#6
-2$:	ld a,(de)
+$2:	ld a,(de)
 	inc de
 	cpd
-	jp po,3$
-	jr z,2$
+	jp po,$3
+	jr z,$2
 	jr rinitbasic$end
-3$:	ld hl,#EBTOKVEC_DEF
+$3:	ld hl,#EBTOKVEC_DEF
 	ld (TOKVEC),hl
 	; the rest is taken from a disassembly of Extended BASIC
 	; I did not bother replacing symbols or commenting.

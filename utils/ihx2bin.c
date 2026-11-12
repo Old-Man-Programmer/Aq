@@ -1,3 +1,20 @@
+/* $Copyright: $
+ * Copyright (c) 2022-2025 by Thomas Moore (darktjm@gmail.com)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
 #include <stdio.h>
 #include <ctype.h>
 #include <stdint.h>
@@ -12,15 +29,15 @@
  * BASIC (start address of code is where program is POKEd into).
  *
  * This does not support gaps, although a future revision might auto-fill
- * them with 0.  This does not pad out the binary output to ROM size,
- * so you may need dd to do that:
- *    ./ihx2bin <my.ihx | dd bs=8k conv=sync iflag=fullblock of=my.bin
+ * them with 0.  To pad to ROM size, give the block size with -p <size>.
+ * This will pad to a multiple of size, not to size.
  */
 
+static FILE *inf, *outf;
 static uint8_t gethex()
 {
     char c[3];
-    c[0] = getchar(); c[1] = getchar(); c[2] = 0;
+    c[0] = getc(inf); c[1] = getc(inf); c[2] = 0;
     if(!isxdigit(c[0]) || !isxdigit(c[1])) {
 	fputs("Bad file format\n", stderr);
 	exit(1);
@@ -34,11 +51,48 @@ int main(int argc, char **argv)
     int start_addr = -1, cur_addr = -1;
     int c;
     int lno = 10;
-    int basic = argc > 1 && !strcmp(argv[1], "-b");
-    int tape = argc > 1 && !strcmp(argv[1], "-t");
+    int basic = 0;
+    unsigned blksz = 0;
+    const char *tape = NULL;
+    while(argc > 1) {
+	if(argv[1][0] != '-' || !argv[1][1] || argv[1][2])
+	    break;
+	argv++;
+	argc--;
+	if((*argv)[1] == '-')
+	    break;
+	switch((*argv)[1]) {
+	  case 'b':
+	    basic = 1;
+	    break;
+	  case 't':
+	    if(!--argc) {
+		fputs("Tape requires file name\n", stderr);
+		exit(1);
+	    }
+	    tape = *++argv;
+	    break;
+	  case 'p':
+	    if(!--argc || !(blksz = atoi(*++argv))) {
+		fputs("-p requires a size arg\n", stderr);
+		exit(1);
+	    }
+	    if(blksz <= 32) /* probably meant k */
+		blksz *= 1024;
+	    break;
+	}
+    }
+    if(!(inf = argc > 1 ? fopen(argv[1], "r") : stdin)) {
+	perror("input");
+	exit(1);
+    }
+    if(!(outf = argc > 2 ? fopen(argv[2], "w") : stdout)) {
+	perror("output");
+	exit(1);
+    }
     static uint8_t tbuf[65536];
     uint8_t *tptr = tbuf;
-    while((c = getchar()) >= 0) {
+    while((c = getc(inf)) >= 0) {
 	if(c != ':')
 	    continue;
 	uint8_t len = gethex(), sum = len;
@@ -50,7 +104,7 @@ int main(int argc, char **argv)
 	if(start_addr < 0) {
 	    start_addr = cur_addr = addr;
 	    if(basic)
-		putchar('\n');
+		putc('\n', outf);
 #if 0
 	    else if(tape) {
 		if(addr != 0x39B9) {
@@ -66,18 +120,18 @@ int main(int argc, char **argv)
 	for(int i = 0; i < len; i++) {
 	    if(basic) {
 		if(!((cur_addr - start_addr)%16))
-		    printf("\n%dDATA", lno++);
+		    fprintf(outf, "\n%dDATA", lno++);
 		else
-		    putchar(',');
+		    putc(',', outf);
 	    }
 	    uint8_t dat = gethex();
 	    sum += dat;
 	    if(basic)
-		printf("%d", (int)dat);
+		fprintf(outf, "%d", (int)dat);
 	    else if(tape)
 		*tptr++ = dat;
 	    else
-		putchar(dat);
+		putc(dat, outf);
 	    cur_addr++;
 	}
 	sum += gethex();
@@ -92,73 +146,79 @@ int main(int argc, char **argv)
     }
     if(tape) {
 	for(int i = 0; i < 12; i++)
-	    putchar(0xff);
-	putchar(0);
+	    putc(0xff, outf);
+	putc(0, outf);
 	int nz = 6;
-	if(argc > 2) {
-	    nz = 6 - strlen(argv[2]);
-	    printf("%.6s", argv[2]);
+	if(tape) {
+	    nz = 6 - strlen(tape);
+	    fprintf(outf, "%.6s", tape);
 	}
 	for(int i = 0; i < nz; i++)
-	    putchar(0);
+	    putc(0, outf);
 	for(int i = 0; i < 12; i++)
-	    putchar(0xff);
-	putchar(0);
-	putchar(0x31); /* link->next line */
-	putchar(0x39);
-	putchar(10); /* line# */
-	putchar(0);
-	putchar('V');
-	putchar(0xb0); /* = */
-	fputs("0:", stdout);
-	putchar(0x85); /* DIM */
-	printf("A(%05d):", (cur_addr - start_addr + 3)/4);
-	putchar('V');
-	putchar(0xb0); /* = */
-	putchar(0xc1); /* PEEK */
-	fputs("(14552)", stdout);
-	putchar(0xa8); /* + */
-	fputs("256", stdout);
-	putchar(0xaa); /* * */
-	putchar(0xc1); /* PEEK */
-	fputs("(14553)", stdout);
-	putchar(0xa8); /* + */
-	fputs("7:", stdout);
-	putchar(0x9a); /* CLOAD */
-	putchar(0xaa); /* * */
-	putchar('A');
-	putchar(0); /* EOL */
-	putchar(0x56); /* Next line link */
-	putchar(0x39);
-	putchar(15); /* line # */
-	putchar(0);
-	putchar(0x94); /* poke */
-	fputs("14340,V", stdout);
-	putchar(0xad); /* AND */
-	fputs("255:", stdout);
-	putchar(0x94); /* poke */
-	fputs("14341,V", stdout);
-	putchar(0xab); /* / */
-	fputs("256:V", stdout);
-	putchar(0xb0); /* = */
-	putchar(0xb5); /* USR */
-	fputs("(V)", stdout);
-	putchar(0); /* EOL */
-	putchar(0); /* link to next line -- end of program */
-	putchar(0);
+	    putc(0xff, outf);
+	putc(0, outf);
+	putc(0x31, outf); /* link->next line */
+	putc(0x39, outf);
+	putc(10, outf); /* line# */
+	putc(0, outf);
+	putc('V', outf);
+	putc(0xb0, outf); /* = */
+	fputs("0:", outf);
+	putc(0x85, outf); /* DIM */
+	fprintf(outf,"A(%05d):", (cur_addr - start_addr + 3)/4);
+	putc('V', outf);
+	putc(0xb0, outf); /* = */
+	putc(0xc1, outf); /* PEEK */
+	fputs("(14552)", outf);
+	putc(0xa8, outf); /* + */
+	fputs("256", outf);
+	putc(0xaa, outf); /* * */
+	putc(0xc1, outf); /* PEEK */
+	fputs("(14553)", outf);
+	putc(0xa8, outf); /* + */
+	fputs("7:", outf);
+	putc(0x9a, outf); /* CLOAD */
+	putc(0xaa, outf); /* * */
+	putc('A', outf);
+	putc(0, outf); /* EOL */
+	putc(0x56, outf); /* Next line link */
+	putc(0x39, outf);
+	putc(15, outf); /* line # */
+	putc(0, outf);
+	putc(0x94, outf); /* poke */
+	fputs("14340,V", outf);
+	putc(0xad, outf); /* AND */
+	fputs("255:", outf);
+	putc(0x94, outf); /* poke */
+	fputs("14341,V", outf);
+	putc(0xab, outf); /* / */
+	fputs("256:V", outf);
+	putc(0xb0, outf); /* = */
+	putc(0xb5, outf); /* USR */
+	fputs("(V)", outf);
+	putc(0, outf); /* EOL */
+	putc(0, outf); /* link to next line -- end of program */
+	putc(0, outf);
 	for(int i = 0; i < 16; i++)
-	    putchar(0);
+	    putc(0, outf);
 	for(int i = 0; i < 12; i++)
-	    putchar(0xff);
-	putchar(0);
-	fputs("######", stdout);
-	fwrite(tbuf, cur_addr - start_addr, 1, stdout);
+	    putc(0xff, outf);
+	putc(0, outf);
+	fputs("######", outf);
+	fwrite(tbuf, cur_addr - start_addr, 1, outf);
 	for(int i = 0; i < 19; i++) /* +3 for padding */
-	    putchar(0);
+	    putc(0, outf);
+    }
+    if(blksz && !basic && !tape) {
+	unsigned int m = (cur_addr - start_addr) % blksz;
+	if(m)
+	    while(m++ < blksz)
+		putc(0, outf);
     }
     if(!basic)
 	return 0;
-    printf("\n"
+    fprintf(outf,"\n"
 	   "%dFORI=%dTO%d:READB:POKEI,B:NEXTI\n"
 	   "%dPOKE14340,%d:POKE14341,%d:X=USR(0)\n"
 	   "RUN\n", lno, start_addr, cur_addr - 1, lno + 1,

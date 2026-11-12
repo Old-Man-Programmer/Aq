@@ -1,0 +1,405 @@
+.TH Aq_binding 5 "" "Aq_binding @PROJECT_VERSION@"
+.SH NAME
+Aq_binding \- Key Binding Configuration for \fBAq\fP(1)
+
+.SH DESCRIPTION
+
+The "\fBkeys\fP" configuration is a JSON object whose keys are strings
+representing input events, and whose values are strings representing what to do
+when that set of input events occurs.  A value of `null` or an empty string does
+nothing; it can be used to disable a default key binding.
+
+.SS Key Strings
+
+The key string starts with modifiers, separated from the rest with a plus sign
+(\fB+\fP) or minus sign (\fB-\fP).  The modifier names are case-insensitive.
+Currently supported raw modifiers are:
+
+.RS
+.B LSHIFT RSHIFT LCTRL RCTRL LALT RALT LGUI RGUI
+.RE
+
+It is currently not possible to require both L and R be pressed at
+once.  Instead, setting both L and R means that *either* L or R may be
+pressed.  Aliases exist to set both:
+
+.RS
+.B     SHIFT CTRL ALT GUI
+.RE
+
+To ignore a modifier, prefix it with an exclamation point (\fB!\fP). Otherwise,
+the modifier set must match the given modifiers exactly. For example, the
+following matches Ctrl-C, whether or not alt or shift is pressed, but not if GUI
+is pressed:
+
+.RS
+.B     Ctrl-!Shift-!Alt-C
+.RE
+
+These names may not correspond to your actual modifier keys.  Since SDL provides
+renames for them, the following aliases exist:
+
+.RS
+GUI:
+.B  LWIN RWIN WIN LCMD RCMD CMD
+.br
+ALT: 
+.B  LOPT ROPT OPT
+.RE
+
+The following SDL modifiers are always ignored, as they are traditionally
+switches rather than temporary key-presses:
+
+.RS
+.B     NUM CAPS MODE SCROLL
+.RE
+
+However, the low-level key codes returned by the OS are generally affected by
+NUM and MODE, and special considerations are made internally by Aq for ASCII
+alphabetic characters if CAPS is set.
+
+Following the optional modifiers is a set of non-modifier keys or game
+controller events.  These are separated by commas; all must be active
+simultaneously in order for the action to take place.  Binding an action to
+multiple events does not disable the binding of each individual event, if such
+a binding exists.
+
+Key names are parsed by `\fBSDL_GetScancodeFromName\fP`.  As you might expect,
+they can include the separators (\fB+\fP, \fB-\fP, or \fB,\fP) and modifiers
+(although the modifier keys also affect modifiers, so you might have to give it
+twice; e.g. \fB!lshift-Left Shift\fP).  Hopefully most names are intuitive enough to
+figure out, but if there is a parse error, the key is ignored (and a message
+printed to standard error), and you will have to dive further into the SDL
+documentation to figure out why.
+
+Controller events are prefixed by `GP`, followed by a controller number,
+followed by an underscore.  See the \fBControllers\fP section below for
+information on what those numbers map to.  \fBGP\fP is matched without regard to
+case.
+
+Controller button presses are given by just the SDL button name (case-
+insensitive, but usually lower-case).  The following buttons are known to be
+supported (it depends on the version of SDL you are using):
+
+.RS
+.B     a b x y back guide start leftstick rightstick leftshoulder rightshoulder
+.br
+.B     dpup dpdown dpleft dpright
+.br
+.B     misc1 paddle1 paddle2 paddle3 paddle4 touchpad
+.RE
+
+Axes are given by an optional direction (\fB+\fP or \fB-\fP), followed by the
+case-insensitive (but usually lower-case) SDL axis name (again, the supported
+names depend on which version of SDL you are using):
+
+.RS
+.B     leftx lefty rightx righty lefttrigger righttrigger
+.RE
+
+For example, the following are all equivalent:
+
+.RS
+.B     gp1_righty
+.br
+.B     GP1_RightY
+.br
+.B     Gp1_+RIGHTY
+.RE
+
+How these button and axis names map to your controller(s) is managed by SDL.
+See e.g.
+.UR https://github.com/gabomdq/SDL_GameControllerDB
+.B The Community Controller Database
+.UE .
+
+.SS Actions
+
+The action string is either blank/null (ignore), a sequence of Aquarius keys
+and/or game controller events, or a hotkey name.  The sequence of keys and/or
+events is separated by comma (\fB,\fP), minus (\fB-\fP), or plus (\fB+\fP); all
+of the specified keys and controller events will occur as if pressed
+simultaneously.
+
+Aquarius keys should always ignore shift and ctrl modifiers, since they are
+mapped to the Aquarius SHIFT and CTL keys, respectively.  In addition, shifted
+symbols are automatically mapped to a key plus SHIFT, and control keys are
+automatically mapped to a key plus CTL. The following ASCII key names are
+supported (case-insensitive, but usually upper-case):
+
+.RS
+.B     1234567890-=  !"#$%^'()?_+
+.br
+.B     QWERTYUIOP/   ^\e
+.br
+.B     ASDFGHJKL:;   @*
+.br
+.B     ZXCVBNM,.     <>
+.RE
+
+And the following non-ASCII key names:
+
+.RS
+.B     CTL SHIFT SPACE RTN <-
+.RE
+
+Note that an upper-case letter does not imply shift; this must be explicitly
+given as e.g. \fBSHIFT-A\fP.  Also, the \fBRST\fP key is not mappable, since it
+isn't really a key; instead, use the \fBRESET\fP (or \fBAq/RESET\fP) action.
+
+Aquarius game controller events are prefixed by \fBJ\fP, followed by the
+controller number (\fB1\fP/\fBA\fP/\fBL\fP or \fB2\fP/\fBB\fP/\fBR\fP), followed
+by an underscore (\fB_\fP), followed by either a button name (\fB1\fP .. \fB6\fP)
+or a direction (\fBN\fP, \fBS\fP, \fBE\fP, \fBW\fP, \fBNE\fP, \fBNW\fP, \fBSE\fP,
+\fBSW\fP, \fBNNE\fP, \fBENE\fP, \fBNNW\fP, \fBWNW\fP, \fBSSE\fP, \fBESE\fP,
+\fBSSW\fP, \fBWSW\fP), where \fBN\fP means up and \fBE\fP means right.  If a
+direction is mapped to an axis, the inverse of the axis is automatically mapped
+to the opposite direction.  If more than one direction is applied
+simultaneously, they are averaged.  If analog, they are weighted by the analog
+intensity.  Thus, the default mapping of \fBGP1_+leftx\fP to \fBJ1_E\fP and
+\fBGP1_lefty\fP to \fBJ1_S\fP will push the first dial in the direction of
+the left analog stick, selecting all 16 directions in a natural way.
+
+Actions consist of the menu item name, optionally prefixed by the menu name,
+separated by a slash.  Only alphanumeric characters and slashes are matched,
+without regard to case.  There are also a few non-menu actions which can be
+bound.  Toggle-able actions may optionally be prefixed with a \fB+\fP or \fB-\fP
+to always turn the option on or off, respectively, instead of toggling.  If both
+\fB+\fP and \fB-\fP are specified, the flag will respect the first character on
+press, and the second on release (e.g. \fB"+-Turbo Toggle"\fP will enable turbo
+when pressed, and disable when released).
+
+The following actions are currently supported (\fB+-\fP indicates toggle):
+
+.B General:
+.RS 3
+.TP
+.B Aq/RESET
+Reset emulator.
+.PP
+.TP
++-\fBUse Extended BASIC\fP
+Toggle use of Extended BASIC on next RESET.
+.PP
+.TP
++-\fBTurbo Toggle\fP
+Toggle keyboard turbo mode.
+.PP
+.TP
++-\fBToggle Fullscreen\fP
+Toggle desktop full-screen mode.
+.PP
+.TP
+.B Volume Up
+Decrease internal volume attenuation.
+.PP
+.TP
+.B Volume Down
+Increase internal volume attenuation.
+.PP
+.TP
++-\fBMute Toggle\fP
+Toggle maximum internal volume attenuation (restores current Up/Down setting on
+unmute).
+.PP
+.TP
++-\fBKeyboard Mode Toggle\fP
+Toggle auto-inserted keyboard event mode between scan (+) and timer (-).  This
+only affects auto-typing ("Load BASIC" or -b). It is saved in the preference
+file, so it is technically a non-GUI flag.
+.PP
+.TP
++-\fBSwap Joysticks\fP
+Swap bindings for left and right sticks.
+.PP
+.RE
+
+.B GUI only:
+.RS 3
+.TP
+.B Aq/About
+Pop up About dialog.
+.PP
+.TP
+.B Aq/Load BASIC...
+Request file and type contents in trubo mode.
+.PP
+.TP
+.B Aq/Change ROMs...
+Change one or more ROM files.  Automatically resets upon change.
+.PP
+.TP
+.B Tape/Set Tape File...
+Request file to use for subsequent tape operations.
+.PP
+.TP
++-\fBTape/Auto Ask on Save\fP
+Toggle automatic file request popup whenever a new save is detected.
+.PP
+.TP
++-\fBTape/Auto Ask at End\fP
+Toggle automatic file request whenever a load occurs at the end of a tape.
+.PP
+.TP
++-\fBTape/Auto Ask at Load\fP
+Toggle automatic file request whenever a new load is detected.
+.PP
+.TP
++-\fBGUI/Show Menu\fP
+Toggle menu bar.
+.PP
+.TP
+.B Aq/Bind Keys
+Pop up key bonding dialog.
+.PP
+.TP
+.B Set Cartridge...
+Request file name for expansion cartridge; loaded at next RESET.
+.PP
+.TP
+.B Set BASIC ROM...
+Request file name for main emulator ROM; loaded at next RESET.
+.PP
+.TP
+.B Set Character ROM...
+Request file name for character ROM; loaded at next RESET.
+.PP
+.TP
+.B Set Extended BASIC ROM...
+Request file name for special Extended BASIC ROM to be loaded (if enabled) at
+next RESET.
+.PP
+
+
+.SS Controllers
+
+Rather than requiring controller specification on every such event, controllers
+are assigned to numbers.  Controllers are only detected at program startup
+(i.e., hot plugging is not supported).  Any detected controllers not explicitly
+assigned to a number are assigned to numbers not currently assigned to any
+explicit controller, in order. In general, when multiple controllers apply, they
+are sorted first by player index, and then by detection order.
+
+A controller may only be assigned to one number.  A number may map to multiple
+controllers, though.  In the latter case, buttons will be merged, and axes will
+come from the first assigned controller which is not considered inactive
+(centered sticks or unpressed triggers).  It is also possible for an index to be
+empty, although as stated above, it will be auto-filled if there are enough
+controllers in the system, even if a specific (but non-matching) pattern was
+assigned.
+
+To explicitly assign a controller to a number, use the \fB"controllers"\fP
+configuration key.  The value is an array of arrays.  Each top-level array
+index corresponds to the controler number, starting at 1.  If an element is an
+empty array, no explicit controllers are assigned. Otherwise, the element must
+be an array of string patterns:
+
+.IP \(bu 2
+Blank: all controllers.  For example:
+
+.RS
+   \fB""  // All detected controllers\fP
+.RE
+.PP
+.IP \(bu 2
+A string which must exactly match the controller's identifier name, without
+regard to case.  For example:
+
+.RS
+   \fB"Microsoft X-Box 360 pad"  // An X-Box gamepad\fP
+.RE
+.PP
+.IP \(bu 2
+A string which must exactly match the controller's SDL GUID, without regard to
+case.  For example:
+
+.RS
+   \fB"030000004c050000cc0900000081000"  // A DualShock 4 gamepad\fP
+.RE
+.IP \(bu 2
+A POSIX extended regular expression to match either of the above two.  This is
+matched without regard to case, and must match the entire name or GUID.  The
+first and last characters must be \fB^\fP and \fB$\fP, respectively.
+
+.RS
+   \fB"^$"          // An actual blank name\fP
+.br
+   \fB"^.*PS.*$"    // Any game pads with PS in the name\fP
+.RE
+.IP "" 2
+The first and last character are a hint that the pattern must match the entire
+name or GUID, but are not actually included in the pattern.  This means that,
+for example, no parentheses are required to apply these acnhors to all branches
+of the \fB|\fP operator:
+
+.RS
+   \fB"^pat1|pat2$"   // Matches pat1 or pat2, anchored to full string\fP
+.br
+   \fB"^(pat1|pat2)$" // Same, but now a valid regex\fP
+.br
+   \fB"^pat1$|^pat2$" // Same, but now a valid regex\fP
+.RE
+.PP
+.IP \(bu 2
+Any of the above, suffixed with \fB#\fP\fIn\fP, where \fIn\fP indicates the
+\fIn\fPth match.  By default, all matches are included.  Using star (\fB*\fP)
+as the index requests the first as-yet-unassigned match. For example:
+
+.RS
+   \fB"#2"                                // The 2nd detected controller\fP
+.br
+   \fB"Microsoft X-Box 360 pad#1"         // The 2nd XBOX gamepad\fP
+.br
+   \fB"030000004c050000cc0900000081000#1" // The 1st DualShock 4\fP
+.br
+   \fB"^$#1"                              // The 1st actual blank name\fP
+.br
+   \fB"^.*PS.*$#3"                        // The 3rd pad with PS in the name\fP
+.br
+   \fB"#*"                                // The next unassigned controller\fP
+.RE
+
+.IP \(bu 2
+A single vertical bar (\fB|\fP).  This is ignored, except to indicate that if
+subsequent strings match multiple controllers, only the first match is taken.
+This includes strings which match multiple controllers themselves, so the
+following two are equivalent:
+
+.RS
+   \fB[ "^.*X.*Box.*$#1" ]\fP
+.br
+   \fB[ "|", "^.*X.*Box.*$" ]\fP
+.RE
+
+.IP "" 2
+For example, the following selects a specific controller, but falls back to any
+if not found:
+
+.RS
+   \fB[ "|", "^.*Aquarius.*$", "#*" ]\fP
+.RE
+.PP
+
+Explicit matches are assigned in index order.  If a controller matches multiple
+indices, it is only assigned to the first index which matches.  Thus, the
+following will not work as planned:
+
+.RS
+   \fB[ ["^.*X.*Box.*$"] ["^.*X.*Box.*$"] ]\fP
+.RE
+
+Instead of assigning the first X-Box controller to 1, and the second to 2, all
+X-Box controllers will be assigned to 1.  The following two work as intended:
+
+.RS
+   \fB[ ["^.*X.*Box.*$#1"] ["^.*X.*Box.*$#2"] ]\fP
+.br
+   \fB[ ["^.*X.*Box.*$#*"] ["^.*X.*Box.*$#*"] ]\fP
+.RE
+
+Enable the I/O log to see a list of detected controllers, what index they map to
+and what patterns they matched, as well as a list of unmatched patterns.
+
+.SH "SEE ALSO"
+\fBAq\fP(1)
+.PP

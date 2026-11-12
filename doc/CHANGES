@@ -1,0 +1,94 @@
+Version 0.6:
+  Added README.md, man pages, and other documentation (see doc)
+  Converted all Makefiles to CMakeLists.txt
+    - note: clean target doesn't work well any more: use out-of-tree builds
+    - converted asm2bas shell script to cmake script
+      (partly to reduce UNIX dependency, but there's still too much)
+    - install target now installs bin/Aq share/Aq/roms/...
+  Load ROMs from search path of cur dir, installation dir, XDG data dir
+    - added new generic xdg.c for this and loading config files
+  Added config file (xdg loc; usually ~/.config/Aq/config.json)
+    - -n to disable/ignore (added to all batch mode Aq tape creations)
+  ihx2bin: made more cmake-friendly:
+    - -t now requires a tape file name argument
+    - optional input file, output file arguments
+    - block padding similar to what I used to use dd for
+  Increased scan mode count to more than 70 (the Aquarius' max count).
+    - Changed batch mode tape creation scripts to use -k now
+  Reset now re-initializes RAM, ROM, I/O (so GUI can change sysconfig @reset)
+  screen.c: Replaced SDL_Renderer with SDL_GL+OpenGL in its own thread
+    - now also retains 4:3 aspect and fills rest with border color
+  Added generic SDL key/gamepad re-mapper
+    - rewrote aqjoy.c to now use re-mapper events
+    - removed hotkeys & event processing from z80.c
+      - z80 main loop no longer calls SDL at all: event processing is
+	done in GUI thread instead.
+    - load mapping from config file
+  Added main GUI using Qt (thus CMake) or Dear IMGUI (thus GL):
+  * = planned
+    - compile with one or the other, or neither
+    - all C++ code confined to 3 .cpp files: qtgui.cpp (Qt), dimgui.cpp
+      (Dear ImGui), gui_common.cpp (both, and sometimes neither).
+    - toggle-able main menu bar; F10 to toggle; on by default
+    - RMB "context" menu always on
+    - type in a (presumably BASIC) text file right now (Alt-B)
+    - cartridge change file dialog (key to pop up Alt-G)
+      - takes place after RESET (F11)
+    - sys ROM change popups, including ebasic toggle (no hotkeys)
+      - takes place after RESET (F11)
+    - tape loading/saving:
+      - key to pop up tape file dialog (Alt-T)
+      - options to pop up tape file dialog on save/load/end-of-tape-load
+        - always auto-asks if no tape yet
+    - fullscreen toggle (Alt-F + config file + -f cmd line option)
+    - imgui saves window states/file bookmarks in ~/.config/Aq/imgui.json
+    - qtgui saves states in ~/.config/Aq/qtgui.jaon, but load fails
+  Checked prev. versions into git repository
+    - removed copyrighted radofin.bin modification (replaced w/ xdelta)
+    - removed copyrighted Extended BASIC modification (replaced w/
+      script to disassemble and then apply xdelta)
+      - for the cmake version, also made it less dependent on version
+	and location of z80dasm binary by removing top two lines before
+	xdelta.
+
+Version 0.5:
+ screen.c:
+  - Reworked texture handling.  More time when doing a screen refresh, but less
+    time making changes (no more texture locking, just one big texture update
+    every 60th of a second.)  Seems to smooth out the delays
+
+Version 0.4:
+ z80.c:
+  - Fixed overflow for ADD, ADC, ADC16
+  - Fixed RR H and RR L
+  - Add turbo mode on F1 (_turbo ^= TURBO_KEY)
+    - Changes window title to indicate turbo mode is active.
+  - Added X & Y flags support (should be everywhere)
+  - Moved _IX and _IY into _reg, added IXh/IXl and IYh/IYl as well.
+
+ io.c/z80.c:
+  - Added support for caps lock.  Sometimes if a character is typed very quickly
+    it will still register as a lower case letter.  Probably not much to be done
+    about it.
+
+ roms/radofin.bin
+  - Patch CKSYSAD to ret immediately.
+ rom/ebasic.bin
+  - Using Toms patched ebasic now, fully works.
+
+ ihx2bin.c:
+  - Put in main dir
+  - Added to Makefile
+  - Should probably make a utils dir and populate that.
+  - Updated with version that supports making tapes (-t)
+
+ exc:
+  - Updated (9-27)
+  - Added aqarius.mac to main directory
+
+ mem.c:
+  - Switched memory access, reading should no longer require any decision paths.
+  - memory writes are specific to the device.
+ io.c:
+  - xor software lock now updates memory, _swlock_pattern is not used when
+    accessing memory.

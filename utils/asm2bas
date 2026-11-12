@@ -1,29 +1,72 @@
-#!/bin/sh
+#!/bin/env cmake -P
+cmake_minimum_required(VERSION 3.21.0)
 
-p="${0%/*}"
-test "x$p" = "x$0" && p=.
-for x; do
-    case "$x" in
-      *.[aA][sS][mM]|*.as) ;;
-      *) for x in "$x".as "$x".[aA][sS][mM]; do
-            test -f "$x" && break
-         done ;;
-    esac
-
-    # Print initial comments
-    i=1
-    c=
-    while read -r a b; do
-       test ';' = "$a" || break
-       c="$c${i}PRINT\"$b\"\\
-"
-       i=$((i+1))
-    done <"$x"
-    
-    # Insert explicit additional BASIC commands
-    c="$c$(sed -n -e '/^;BASIC$/,${s/.//;s/$/\\/;p}' "$x" | tail -n +2)"
-    test -n "$c" &&
-       sed -i -e "/RUN/i \\
-$c
-" "${x%.*}".bas
-done
+if("${IHX2BIN}" STREQUAL "")
+  cmake_path(SET CWD .)
+  cmake_path(ABSOLUTE_PATH CWD)
+  while(1)
+    set(u "${CWD}/utils")
+    if(EXISTS "${u}/ihx2bin")
+      set(IHX2BIN "${u}/ihx2bin")
+      break()
+    elseif(EXISTS "${CWD}/ihx2bin")
+      set(IHX2BIN "${u}/ihx2bin")
+      break()
+    endif()
+    cmake_path(HAS_PARENT_PATH CWD hasp)
+    if(NOT ${hasp})
+      break()
+    endif()
+    cmake_path(GET CWD PARENT_PATH CWD)
+  endwhile()
+endif()
+if("${IHX2BIN}" STREQUAL "")
+  message(FATAL_ERROR "Can't find ihx2bin; use -DIHX2BIN")
+endif()
+if("${f}" STREQUAL "")
+  # Stupid cmake doesn't filter args to script args
+  set(i 0)
+  while(${i} LESS ${CMAKE_ARGC})
+    math(EXPR i ${i}+1)
+    if("${CMAKE_ARGV${i}}" STREQUAL -P)
+      math(EXPR i ${i}+2)
+      break()
+    endif()
+  endwhile()
+  set(f "${CMAKE_ARGV${i}}")
+endif()
+set(as "${f}.as")
+# cmake sets CMAKE_CURRENT_SOURCE_DIR to the binary dir for some reason
+# and it can't be overridden, so this script takes SOURCE_DIR as a parameter
+if((NOT "${SOURCE_DIR}" STREQUAL "") AND
+   NOT EXISTS "${as}")
+  set(as "${SOURCE_DIR}/${f}.as")
+endif()
+if(NOT EXISTS "${as}" OR NOT EXISTS "${f}.ihx")
+  message(FATAL_ERROR "${f}.as must exist and be compiled into .ihx")
+endif()
+execute_process(COMMAND "${IHX2BIN}" -b "${f}.ihx" OUTPUT_VARIABLE BAS)
+set(post "")
+# Print initial comments
+file(STRINGS "${as}" ASF)
+set(i 1)
+foreach(c ${ASF})
+  if(NOT "${c}" MATCHES "^;(| (.*))$")
+    break()
+  endif()
+  set(post "${post}${i}PRINT\"${CMAKE_MATCH_2}\"\n")
+  math(EXPR i ${i}+1)
+endforeach()
+# Insert explicit additional BASIC commands
+# Probably needs to be fixed to be better, but I don't care right now
+set(isbas 0)
+foreach(c ${ASF})
+  if(isbas)
+    string(SUBSTRING "${c}" 1 -1 c)
+    set(post "${post}${c}\n")
+  elseif("${c}" STREQUAL ";BASIC")
+    set(isbas 1)
+  endif()
+endforeach()
+string(REPLACE "\nRUN" "\n${post}RUN" BAS "${BAS}")
+file(WRITE "${f}.bas" "${BAS}")

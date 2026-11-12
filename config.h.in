@@ -1,0 +1,5 @@
+/* Filled in by cmake */
+#define SYS_DIR "@DATA_DIR@/"
+#define VERSION "@PROJECT_VERSION@"
+#cmakedefine USE_QT
+#cmakedefine USE_IMGUI
