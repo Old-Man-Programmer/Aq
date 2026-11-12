@@ -16,6 +16,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,9 +32,8 @@
 #include <ctype.h>
 #include <locale.h>
 #include "aqsnd.h"
-#include <SDL/SDL.h>
-#include <SDL/SDL_video.h>
-#include <SDL/SDL_image.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_video.h>
 
 #define ROMS	"./roms/"
 
@@ -126,17 +126,18 @@ extern int _widx;
 
 /* screen.c */
 void color(uint8_t data, uint32_t *fg, uint32_t *bg);
-void putpixel(SDL_Surface *surface, int x, int y, Uint32 pixel);
+void putpixel(int x, int y, uint32_t pixel);
 void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg);
 void fillrect(int x1, int y1, int x2, int y2, uint32_t bg);
+void screen_update(void);
 void screen_init(void);
 uint8_t screen_reader(uint16_t addr, uint8_t *cell);
 uint8_t screen_writer(uint16_t addr, uint8_t *cell, uint8_t data);
-extern int _xorigin, _yorigin, _screen_w, _screen_h, _border, _scale;
-extern SDL_Surface *_screen;
+extern int _scale;
 extern uint8_t *_cdata;
 
 /* io.c */
+int fixkeys(int key, int *shift, int *ctrl);
 int findkey(int k);
 void io_init(void);
 uint8_t io_read(uint8_t port, uint8_t top);

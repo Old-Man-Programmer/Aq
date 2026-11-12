@@ -21,6 +21,7 @@
 #include <portaudio.h>
 //#include <pa_linux_alsa.h>
 #include <time.h>
+#include <math.h>
 #include <pthread.h>
 
 int _is_tape = 0; // true if currently doing tape output (auto-mute, turbo)
@@ -107,8 +108,8 @@ static /* volatile */ struct snd_state {
 #define ENV_HOLD 1 /* after one attack/decay, hold at current */
 
 #define COLOR_CLOCK 3579545  /* NTSC color burst */
-#define DEV_CLOCK (COLOR_CLOCK/2.0)  /* recommended/probable "cheap" design */
-#define SND_CLOCK (DEV_CLOCK/16.0)  /* env runs at 1/16 this */
+#define DEV_CLOCK (COLOR_CLOCK/2)  /* recommended/probable "cheap" design */
+#define SND_CLOCK (DEV_CLOCK/16)  /* env runs at 1/16 this */
 
 #define TAPE_ZERO (1200L*COLOR_CLOCK/1000000)
 #define TAPE_ONE (TAPE_ZERO/2)

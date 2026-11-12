@@ -24,15 +24,15 @@ struct memory *_page[256], **_basic;
 struct writelog _wlog[10];
 int _widx = 0;
 
-// static uint8_t nomem_read(uint16_t addr, _U uint8_t *cell)
-// {
-//   return addr & 0xFF;
-// }
-// 
-// static uint8_t nomem_write(_U uint16_t addr, _U uint8_t *cell, _U uint8_t data)
-// {
-//   return 0;
-// }
+static uint8_t nomem_read(uint16_t addr, _U uint8_t *cell)
+{
+  return addr & 0xFF;
+}
+
+static uint8_t nomem_write(_U uint16_t addr, _U uint8_t *cell, _U uint8_t data)
+{
+  return 0;
+}
 
 uint8_t load(uint16_t addr)
 {

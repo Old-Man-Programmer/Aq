@@ -37,7 +37,6 @@ int main(int argc, char **argv)
     printf("Could not initialize SDL: %s.\n", SDL_GetError());
     return -1;
   }
-  SDL_EnableUNICODE( 1 );
 
   int n, i, j;
   bool optf = true;

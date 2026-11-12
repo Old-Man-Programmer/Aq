@@ -454,7 +454,6 @@ static int OUTX(int dir)
   return 16;
 }
 
-/*
 static char *status(uint8_t F)
 {
   static char f[8];
@@ -467,7 +466,6 @@ static char *status(uint8_t F)
   f[6] = 0;
   return f;
 }
-*/
 
 static void pinstr(uint16_t PC, int pfx, uint8_t d, const char *instr)
 {
@@ -505,7 +503,7 @@ static void run()
 {
   struct timeval t;
   unsigned long cur, prev;
-  int cycles = 0, clocks = 0;
+  int cycles = 0, clocks = 0, pixclocks = 0;
   uint16_t addr;
   uint8_t l, h, o, n;
   int halted = false;
@@ -1832,21 +1830,24 @@ static void run()
 
     clocks += cycles;
     _totclk += cycles;
+    pixclocks += cycles;
     if (clocks > 3580) {
-
       SDL_Event event;
+      static int keydown = 0;
       while(SDL_PollEvent(&event)) {  
 	switch(event.type) {
 	  case SDL_KEYDOWN:
-	    if (event.key.keysym.unicode <= 128) {
-	      _key = event.key.keysym.unicode & 0x7F;
+	    if (event.key.keysym.sym <= 128) {
+	      keydown = _key = event.key.keysym.sym;
 	      _ctrl = event.key.keysym.mod & KMOD_CTRL;
 	      _shift = event.key.keysym.mod & KMOD_SHIFT;
+	      _key = fixkeys(_key, &_shift, &_ctrl);
 	    }
-	    if (_key == '\004') quit();
+	    if (event.key.keysym.sym == SDLK_F1) quit();
+	    if (event.key.keysym.sym == SDLK_ESCAPE) return;
 	    break;
 	  case SDL_KEYUP:
-	    if (event.key.keysym.sym <= 128) _key = 0;
+	    if (event.key.keysym.sym == keydown) _key = 0;
 	    if (event.key.keysym.mod & KMOD_CTRL) _ctrl = 0;
 	    if (event.key.keysym.mod & KMOD_SHIFT) _shift = 0;
 	    break;
@@ -1855,16 +1856,20 @@ static void run()
 	    break;
 	}
       }
+      if (pixclocks > VSCLKS) {
+	screen_update();
+	pixclocks -= VSCLKS;
+      }
 
       clocks -= 3580;
       gettimeofday(&t, NULL);
       cur = t.tv_sec*1000000+t.tv_usec;
-      long diff = cur - prev;
+      long diff = 1000 - (cur - prev);
       prev = cur;
       if (_is_tape) auto_end_tape();
-      else if (diff < 1000) {
-	  usleep(1000-diff);
-	  prev += 1000-diff;
+      else if (diff > 0) {
+	usleep(diff);
+	prev += diff;
       }
     }
 
@@ -1887,18 +1892,20 @@ static void run()
 
 void reset()
 {
-  _PC = 0x0000;
-  _SP = 0xFFFF;
-  _reg.AF = 0xFFFF;
-  _reg.BC = _reg.DE = _reg.HL = 0x0000;
-  _alt.AF = 0xFFFF;
-  _alt.BC = _alt.DE = _alt.HL = 0x0000;
-  _IX = _IY = 0;
-  _IFF1 = _IFF2 = 0;
-  _imode = 0;
+  do {
+    _PC = 0x0000;
+    _SP = 0xFFFF;
+    _reg.AF = 0xFFFF;
+    _reg.BC = _reg.DE = _reg.HL = 0x0000;
+    _alt.AF = 0xFFFF;
+    _alt.BC = _alt.DE = _alt.HL = 0x0000;
+    _IX = _IY = 0;
+    _IFF1 = _IFF2 = 0;
+    _imode = 0;
 
-  _I = _R = 0;
+    _I = _R = 0;
 
-  run();
+    run();
+  } while (1);
 }
 

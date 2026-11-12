@@ -57,141 +57,140 @@ struct color {
   {22, 22, 22},		// Dark GRAY
 };
 
-int _colors[] = {
-  0, 9, 10, 11, 12, 13, 14, 15,
-  7, 6,  5,  4, 11, 10,  3,  8
+uint32_t _colors[] = {
+  0xFF000000, 0xFFFF3E41, 0xFF40FE41, 0xFFFEFE42,
+  0xFF3F40FC, 0xFFFE40FD, 0xFF3DFFFD, 0xFFFFFFFF,
+
+  0xFFBFBFBF, 0xFF81E2E1, 0xFFC667C6, 0xFF4A4AAB,
+  0xFFF4F493, 0xFF78D778, 0xFFBD5B5D, 0xFF000000
 };
 
 static int _bordercolor, _cbgcolor = 0;
 int _xorigin, _yorigin, _screen_w, _screen_h, _border, _scale = 5;
-SDL_Surface *_screen;
+static int _texw, _texh;
+SDL_Renderer *_renderer;
+SDL_Texture *_texture;
+uint32_t *_screen;
 uint8_t *_cdata;
 
 void color(uint8_t data, uint32_t *fg, uint32_t *bg)
 {
   int f = data>>4, b = data&0xF;
-  *fg = SDL_MapRGB(_screen->format, aq_colors[f].r, aq_colors[f].g, aq_colors[f].b);
-  *bg = SDL_MapRGB(_screen->format, aq_colors[b].r, aq_colors[b].g, aq_colors[b].b);
-//   int fg = (data>>4);
-//   int bg = (data&0x0F);
-// 
-//   return (_colors[fg]<<4)|_colors[bg];
+  *fg = _colors[f];
+  *bg = _colors[b];
+//   *fg = 0xFF000000 | (aq_colors[f].r << 16) | (aq_colors[f].g << 8) | aq_colors[f].b;
+//   *bg = 0xFF000000 | (aq_colors[b].r << 16) | (aq_colors[b].g << 8) | aq_colors[b].b;
+//   *fg = SDL_MapRGB(_screen->format, aq_colors[f].r, aq_colors[f].g, aq_colors[f].b);
+//   *bg = SDL_MapRGB(_screen->format, aq_colors[b].r, aq_colors[b].g, aq_colors[b].b);
 }
 
-/*
- * Set the pixel at (x, y) to the given value
- * NOTE: The surface must be locked before calling this!
- */
-void putpixel(SDL_Surface *surface, int x, int y, Uint32 pixel)
+void putpixel(int x, int y, uint32_t pixel)
 {
-    int bpp = surface->format->BytesPerPixel;
-    /* Here p is the address to the pixel we want to set */
-    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * bpp;
-
-    switch(bpp) {
-    case 1:
-        *p = pixel;
-        break;
-
-    case 2:
-        *(Uint16 *)p = pixel;
-        break;
-
-    case 3:
-        if(SDL_BYTEORDER == SDL_BIG_ENDIAN) {
-            p[0] = (pixel >> 16) & 0xff;
-            p[1] = (pixel >> 8) & 0xff;
-            p[2] = pixel & 0xff;
-        } else {
-            p[0] = pixel & 0xff;
-            p[1] = (pixel >> 8) & 0xff;
-            p[2] = (pixel >> 16) & 0xff;
-        }
-        break;
-
-    case 4:
-        *(Uint32 *)p = pixel;
-        break;
-    }
+  if (x < 0 || y < 0 || x > _texw || y > _texh) {
+    printf("x,y out of bounds (%d,%d)\n", x, y);
+    abort();
+  }
+  _screen[(y*_texw)+x] = pixel;
 }
 
 void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg)
 {
-  int x, y, cr, cbit;
+  int x, y, cbit;
 
   if (row < 0 || col < 0 || row > 23 || col > 39) {
     fprintf(stderr,"col,row out of range. (%d,%d)\n", col, row);
     abort();
   }
-  /* Lock the screen for direct access to the pixels */
-  if ( SDL_MUSTLOCK(_screen) ) {
-    if ( SDL_LockSurface(_screen) < 0 ) {
+  SDL_Rect rect = {.x=_border+col*8, .y=_border+row*8, .w=8, .h=8};
+  uint32_t *pixels;
+  int pitch;
+  if (SDL_LockTexture(_texture, &rect, (void **)&pixels, &pitch) < 0 ) {
       fprintf(stderr, "Can't lock screen: %s\n", SDL_GetError());
       return;
-    }
   }
 
   uint8_t *cbyte = &_cdata[ch<<3];
 
-  int xo = _xorigin + ((col*8)*_scale);
-  int yo = _yorigin + ((row*8)*_scale);
-
-  for(y=yo, cr = 0; cr < 8; (y+=_scale), cr++, cbyte++) {
-
-    for(cbit = 128, x = xo; cbit; (x+=_scale), (cbit>>=1)) {
-      uint32_t color = (*cbyte & cbit)? fg : bg;
-
-      for(int sy=0; sy < _scale; sy++) {
-	for(int sx=0; sx < _scale; sx++) {
-	  putpixel(_screen, x+sx, y+sy, color);
-	}
-      }
-
+  for(y=0; y < 8; y++, cbyte++) {
+    for(cbit=128, x=0; x < 8; x++, (cbit>>=1)) {
+      pixels[x+(y*_texw)] = (*cbyte & cbit)? fg : bg;
     }
   }
-  if ( SDL_MUSTLOCK(_screen) ) {
-    SDL_UnlockSurface(_screen);
-  }
+/*  
+  for(y=yo, cr = 0; cr < 8; y++, cr++, cbyte++) {
+    for(cbit = 128, x = xo; cbit; x++, (cbit>>=1)) {
+      putpixel(x, y, (*cbyte & cbit)? fg : bg);
+    }
+  }*/
 
-  /* Update just the part of the display that we've changed */
-  SDL_UpdateRect(_screen, xo, yo, 8*_scale, 8*_scale);
+  SDL_UnlockTexture(_texture);
 }
 
 void fillrect(int x, int y, int width, int height, uint32_t bg)
 {
-  /* Lock the screen for direct access to the pixels */
-  if ( SDL_MUSTLOCK(_screen) ) {
-    if ( SDL_LockSurface(_screen) < 0 ) {
+  SDL_Rect rect = {.x=x, .y=y, .w=width, .h=height};
+  uint32_t *pixels;
+  int pitch;
+  if (SDL_LockTexture(_texture, &rect, (void **)&pixels, &pitch) < 0 ) {
       fprintf(stderr, "Can't lock screen: %s\n", SDL_GetError());
       return;
-    }
-  }
-  for(int sy=y; sy < y+height; sy++) {
-    for(int sx=x; sx < x+width; sx++) {
-      putpixel(_screen, sx, sy, bg);
-    }
-  }
-  if ( SDL_MUSTLOCK(_screen) ) {
-    SDL_UnlockSurface(_screen);
   }
 
-  /* Update just the part of the display that we've changed */
-  SDL_UpdateRect(_screen, x, y, width, height);
+  for(int sy=0; sy < height; sy++) {
+    for(int sx = 0; sx < width; sx++) {
+      pixels[sx+(sy*_texw)] = bg;
+    }
+  }
+//   for(int sy=y; sy < y+height; sy++) {
+//     for(int sx=x; sx < x+width; sx++) {
+//       
+//       putpixel(sx, sy, bg);
+//     }
+//   }
+  SDL_UnlockTexture(_texture);
+}
+
+void screen_update(void)
+{
+  SDL_RenderClear(_renderer);
+  SDL_RenderCopy(_renderer, _texture, NULL, NULL);
+  SDL_RenderPresent(_renderer);
 }
 
 void screen_init(void)
 {
-  _screen_w = (40*8)*_scale;
-  _screen_h = (24*8)*_scale;
-  _border = 10*_scale;
+  _screen_w = (40*8);
+  _screen_h = (24*8);
+  _border = 10;
   _xorigin = _yorigin = _border;
+  _texw = _screen_w+(_border*2);
+  _texh = _screen_h+(_border*2);
 
-  _screen = SDL_SetVideoMode(_screen_w+(_border*2), _screen_h+(_border*2), 8, SDL_SWSURFACE);
-  if (_screen == NULL ) {
-    fprintf(stderr, "Couldn't set %dx%dx8 video mode: %s\n", _screen_w+(_border*2), _screen_h+(_border*2),
-                    SDL_GetError());
-    return;
+  SDL_Window *window = SDL_CreateWindow("Aquarius", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                             _texw*_scale, _texh*_scale, SDL_WINDOW_RESIZABLE);
+  if (window == NULL) {
+    fprintf(stderr, "Couldn't get a window [%s]\n", SDL_GetError());
+    exit(1);
   }
+  _renderer = SDL_CreateRenderer(window, -1, 0);
+  if (_renderer == NULL) {
+    fprintf(stderr, "Couldn't get a renderer [%s]\n", SDL_GetError());
+    exit(1);
+  }
+
+  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");  // make the scaled rendering look smoother.
+  SDL_RenderSetLogicalSize(_renderer, _texw, _texh);
+
+  _texture = SDL_CreateTexture(_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+                               _texw, _texh);
+  if (_texture == NULL) {
+    fprintf(stderr, "Couldn't get a texture [%s]\n", SDL_GetError());
+    exit(1);
+  }
+
+  _screen = malloc((_texw*_texh)*sizeof(uint32_t));
+  memset(_screen, 128, (_texw*_texh)*sizeof(uint32_t));
+  SDL_UpdateTexture(_texture, NULL, _screen, _texw*sizeof(uint32_t));
 }
 
 uint8_t screen_reader(_U uint16_t addr, uint8_t *cell)

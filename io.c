@@ -93,11 +93,25 @@ struct keyscan _keys[] = {
   {'m',0x08,0x04,0},    {'n',0x10,0x04,0},      {'o',0x02,0x04,0},      {'p',0x08,0x02,0},
   {'q',0x08,0x80,0},    {'r',0x08,0x20,0},      {'s',0x04,0x40,0},      {'t',0x02,0x20,0},
   {'u',0x08,0x08,0},    {'v',0x08,0x10,0},      {'w',0x02,0x80,0},      {'x',0x20,0x20,0},
-  {'y',0x02,0x10,0},    {'z',0x08,0x40,0},      {'{',0x01,0x08,0},      {'|',0x00,0x00,0},
+  {'y',0x02,0x10,0},    {'z',0x08,0x40,0},      {'{',0x01,0x08,2},      {'|',0x00,0x00,0},
   {'}',0x01,0x04,2},    {'~',0x00,0x00,0},      {'\127',0x0B,0x01,0},
   {SDLK_BACKSPACE,0x02,0x01,0},
   {-1,0,0,0}
 };
+
+int fixkeys(int key, int *shift, int *ctrl)
+{
+//  static char *atable = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+  static char *mtable   = "       \"    <_>?)!@#$%^&*( : + ?@                          {|}  ~";
+  if (*ctrl) return key;
+  if (*shift) {
+    if (key >= 32 && key <= 96 && mtable[key-32] != ' ') key = mtable[key-32];
+    if (key == ':') *shift = false;
+  } else {
+    if (key == '[' || key == ']' || key == '\'' || key == '`') *shift = true;
+  }
+  return key;
+}
 
 int findkey(int k)
 {
