@@ -16,6 +16,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+
 #include "Aq.h"
 
 struct ports port[256];
@@ -23,6 +24,8 @@ struct ports port[256];
 keymode_t _keymode = TIMER;
 int _keydown=0;
 uint8_t _keyrow=0;
+
+int _key = 0, _ctrl = 0, _shift = 0;
 
 #define CTRL	1
 #define SHIFT	2
@@ -49,14 +52,21 @@ ROW/COL:
 20 | CTL a  x  f  b  j  ,  .  bit5  223  0xDF
 */
 
-struct keyscan {
-  int ch, row, col, modkey;
-} _keys[] = {
+char keyrows[6][8] = {
+  {'2', '3', '5', '6', '8', '9', '-', '='},
+  {'w', 'e', 't', 'y', 'i', 'o', '/', '\b'},
+  {'1', 's', '4', 'g', '7', 'k', '0', ':'},
+  {'2', 'z', 'r', 'v', 'u', 'm', 'p', '\n'},
+  {'x', ' ', 'd', 'c', 'h', 'n', 'l', ';'},
+  {'x', 'a', 'x', 'f', 'b', 'j', ',', '.'}
+};
+
+struct keyscan _keys[] = {
   {0,0x00,0x00,0},      {0,0x20,0x80,0},        {0,0x10,0x80,0},        {0,0x00,0x00,0},
   {'\001',0x20,0x40,1}, {'\002',0x20,0x08,1},   {'\003',0x10,0x10,1},   {'\004',0x10,0x20,1},
   {'\005',0x02,0x40,1}, {'\006',0x20,0x10,1},   {'\007',0x04,0x10,1},   {'\b',0x02,0x01,0},
   {'\011',0x02,0x08,1}, {'\n',0x08,0x01,0},     {'\013',0x04,0x04,1},   {'\014',0x10,0x02,1},
-  {'\015',0x08,0x04,1}, {'\016',0x10,0x04,1},   {'\017',0x02,0x04,1},   {'\020',0x08,0x02,1},
+  {'\015',0x08,0x01,0}, {'\016',0x10,0x04,1},   {'\017',0x02,0x04,1},   {'\020',0x08,0x02,1},
   {'\021',0x08,0x80,1}, {'\022',0x08,0x20,1},   {'\023',0x04,0x40,1},   {'\024',0x02,0x20,1},
   {'\025',0x08,0x08,1}, {'\026',0x08,0x10,1},   {'\027',0x02,0x80,1},   {'\030',0x20,0x20,1},
   {'\031',0x02,0x10,1}, {'\032',0x08,0x40,1},   {'\033',0x01,0x08,1},   {'\034',0x02,0x01,1},
@@ -85,7 +95,7 @@ struct keyscan {
   {'u',0x08,0x08,0},    {'v',0x08,0x10,0},      {'w',0x02,0x80,0},      {'x',0x20,0x20,0},
   {'y',0x02,0x10,0},    {'z',0x08,0x40,0},      {'{',0x01,0x08,0},      {'|',0x00,0x00,0},
   {'}',0x01,0x04,2},    {'~',0x00,0x00,0},      {'\127',0x0B,0x01,0},
-  {KEY_BACKSPACE,0x02,0x01,0},
+  {SDLK_BACKSPACE,0x02,0x01,0},
   {-1,0,0,0}
 };
 
@@ -112,44 +122,32 @@ static void drain(void)
   }
   _nkeys--;
   if (_nkeys) _keydown = _keymode==TIMER? (KEYDOWN + (_keybuf[0]==6? KEYDOWN*3 : 0)) : KEYSCANS;
-//  if (_ilog) fprintf(_ilog, "Drain %d\n", _nkeys);
 }
 
 static uint8_t kb_read(uint8_t column)
 {
   struct keyscan *k;
-  int key;
   uint8_t d = 0;
-
-  if (_nkeys < MAXKEYS) {
-    key = getch();
-    if (key != ERR) {
-      if (key == '\004') quit();
-//      if (_ilog) fprintf(_ilog, "Key found %d\n", key);
-      key = findkey(key);
-//      if (_ilog) fprintf(_ilog, " matched %d\n", key);
-      if (key != 0) {
-	if (_nkeys == 0) _keydown = _keymode == TIMER? (KEYDOWN + (key==6? KEYDOWN*3 : 0)) : KEYSCANS;
-	_keybuf[_nkeys++] = key;
-      }
-//      if (_ilog) fprintf(_ilog, " nkeys %d\n", _nkeys);
-    }
-  }
 
   column = ~column;
   if (_nkeys) {
     k = &_keys[_keybuf[0]];
-//    if (_ilog) fprintf(_ilog, "Scanning columns %0X\n", column);
     if (k->col & column) {
       d |= k->row;
       if (_keymode == SCAN) _keydown--;
     }
     if (k->modkey && (_keys[k->modkey].col & column)) d |= _keys[k->modkey].row;
-//    if (_ilog) fprintf(_ilog, "Scanning column %d d=%d (%d)\n", column, d, _keydown);
     if (_keymode == SCAN) {
       if (d || (k->ch == 0 && column == 0xFF)) _keydown--;
     }
     if (_keydown <= 0) drain();
+  } else {
+    if (_key) {
+      k = &_keys[(int)_key+3];
+      if (k->col & column) d |= k->row;
+    }
+    if (_shift && (column & 0x80)) d |= 0x10;
+    if (_ctrl && (column & 0x80)) d |= 0x20;
   }
 
   return ~d;
@@ -223,8 +221,6 @@ void io_write(uint8_t p, uint8_t top, uint8_t data)
 void io_init(void)
 {
   memset(port, 0, sizeof(port));
-  keypad(_rootwin,TRUE);
-  nodelay(_rootwin,TRUE);
 
   for(int i=0; i <= 0xFF; i++) {
     port[i].reader = NULL;

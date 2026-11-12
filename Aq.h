@@ -16,26 +16,24 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#define _XOPEN_SOURCE   700
-#define NCURSES_WIDECHAR	1
-
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/param.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
+#include <sys/param.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <curses.h>
 #include <ctype.h>
 #include <locale.h>
-#include <dirent.h>
-#include <time.h>
 #include "aqsnd.h"
+#include <SDL/SDL.h>
+#include <SDL/SDL_video.h>
+#include <SDL/SDL_image.h>
 
 #define ROMS	"./roms/"
 
@@ -44,7 +42,7 @@
 #define VACTIVE	45780		/* Active scan period */
 
 typedef enum { TIMER = 0, SCAN = 1 } keymode_t;
-#define KEYDOWN		40000
+#define KEYDOWN		20000
 #define KEYUP		22000
 #define KEYSCANS	4
 #define MAXKEYS		10
@@ -96,6 +94,10 @@ struct writelog {
   uint8_t data;
 };
 
+struct keyscan {
+  int ch, row, col, modkey;
+};
+
 struct ports {
   uint8_t (*reader)(uint8_t top);
   void (*writer)(uint8_t rdata, uint8_t data);
@@ -123,10 +125,16 @@ extern struct writelog _wlog[10];
 extern int _widx;
 
 /* screen.c */
+void color(uint8_t data, uint32_t *fg, uint32_t *bg);
+void putpixel(SDL_Surface *surface, int x, int y, Uint32 pixel);
+void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg);
+void fillrect(int x1, int y1, int x2, int y2, uint32_t bg);
 void screen_init(void);
 uint8_t screen_reader(uint16_t addr, uint8_t *cell);
 uint8_t screen_writer(uint16_t addr, uint8_t *cell, uint8_t data);
-extern WINDOW *_rootwin;
+extern int _xorigin, _yorigin, _screen_w, _screen_h, _border, _scale;
+extern SDL_Surface *_screen;
+extern uint8_t *_cdata;
 
 /* io.c */
 int findkey(int k);
@@ -136,6 +144,7 @@ void io_write(uint8_t port, uint8_t top, uint8_t data);
 extern keymode_t _keymode;
 extern int _keydown;
 extern uint8_t _swlock_pattern;
+extern int _key, _ctrl, _shift;
 
 /* aqjoy.c */
 uint8_t aqjoy_read(uint8_t port);

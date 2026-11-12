@@ -16,9 +16,9 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+
 #include "Aq.h"
 #include "instr.h"
-#include <unistd.h>
 
 struct regset _reg, _alt;
 
@@ -77,13 +77,6 @@ static uint16_t immediate_addr(void)
 {
   uint16_t addr = load(_PC) | (load(_PC+1)<<8);
   _PC += 2;
-  return addr;
-}
-
-static uint16_t immediate(void)
-{
-  uint16_t addr = _PC++;
-//  if (_log) fprintf(_log, "#%d", load(addr));
   return addr;
 }
 
@@ -461,6 +454,7 @@ static int OUTX(int dir)
   return 16;
 }
 
+/*
 static char *status(uint8_t F)
 {
   static char f[8];
@@ -473,6 +467,7 @@ static char *status(uint8_t F)
   f[6] = 0;
   return f;
 }
+*/
 
 static void pinstr(uint16_t PC, int pfx, uint8_t d, const char *instr)
 {
@@ -513,7 +508,7 @@ static void run()
   int cycles = 0, clocks = 0;
   uint16_t addr;
   uint8_t l, h, o, n;
-  int halted = FALSE;
+  int halted = false;
 
   gettimeofday(&t, NULL);
   prev = t.tv_sec*1000000+t.tv_usec;
@@ -527,7 +522,7 @@ static void run()
       case 0x00:	// NOP
 	cycles = 4; break;
       case 0x76:	// HALT
-	halted = TRUE;
+	halted = true;
 	cycles = 4; break;
       case 0xF3:	// DI
 	_IFF1 = _IFF2 = 0;
@@ -1838,6 +1833,29 @@ static void run()
     clocks += cycles;
     _totclk += cycles;
     if (clocks > 3580) {
+
+      SDL_Event event;
+      while(SDL_PollEvent(&event)) {  
+	switch(event.type) {
+	  case SDL_KEYDOWN:
+	    if (event.key.keysym.unicode <= 128) {
+	      _key = event.key.keysym.unicode & 0x7F;
+	      _ctrl = event.key.keysym.mod & KMOD_CTRL;
+	      _shift = event.key.keysym.mod & KMOD_SHIFT;
+	    }
+	    if (_key == '\004') quit();
+	    break;
+	  case SDL_KEYUP:
+	    if (event.key.keysym.sym <= 128) _key = 0;
+	    if (event.key.keysym.mod & KMOD_CTRL) _ctrl = 0;
+	    if (event.key.keysym.mod & KMOD_SHIFT) _shift = 0;
+	    break;
+	  case SDL_QUIT:
+	    quit();
+	    break;
+	}
+      }
+
       clocks -= 3580;
       gettimeofday(&t, NULL);
       cur = t.tv_sec*1000000+t.tv_usec;
@@ -1845,10 +1863,8 @@ static void run()
       prev = cur;
       if (_is_tape) auto_end_tape();
       else if (diff < 1000) {
-	struct timespec tm = { .tv_sec = 0, .tv_nsec = (1000-diff)*1000};
-	nanosleep(&tm, NULL);
-	  // usleep(1000-diff);
-	prev += 1000-diff;
+	  usleep(1000-diff);
+	  prev += 1000-diff;
       }
     }
 

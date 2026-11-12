@@ -16,6 +16,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+
 #include "Aq.h"
 
 struct memory *_page[256], **_basic;
@@ -23,15 +24,15 @@ struct memory *_page[256], **_basic;
 struct writelog _wlog[10];
 int _widx = 0;
 
-static uint8_t nomem_read(uint16_t addr, _U uint8_t *cell)
-{
-  return addr & 0xFF;
-}
-
-static uint8_t nomem_write(_U uint16_t addr, _U uint8_t *cell, _U uint8_t data)
-{
-  return 0;
-}
+// static uint8_t nomem_read(uint16_t addr, _U uint8_t *cell)
+// {
+//   return addr & 0xFF;
+// }
+// 
+// static uint8_t nomem_write(_U uint16_t addr, _U uint8_t *cell, _U uint8_t data)
+// {
+//   return 0;
+// }
 
 uint8_t load(uint16_t addr)
 {
@@ -83,6 +84,12 @@ int initmem()
   for(p=0;p < 256; p++) {
     _page[p] = malloc(sizeof(struct memory));
     memset(_page[p], 0, sizeof(struct memory));
+  }
+
+  _cdata = loadrom(ROMS "Aquarius-chars.rom", &size);
+  if (_cdata == NULL) {
+    fprintf(stderr,"Unable to open ROM file %s [%s]\n", ROMS "Aquarius-chars.rom", strerror(errno));
+    exit(1);
   }
 
   /* Map roms onto pages */

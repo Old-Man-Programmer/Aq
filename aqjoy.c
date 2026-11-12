@@ -1,3 +1,22 @@
+/* $Copyright: $
+ * Copyright (c) 2022-2025 by Steve Baker (steve.baker.llc@gmail.com)
+ *   and Thomas Moore (darktjm@gmail.com)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
 /*
  * Since SDL2 refuses to work for me, I have written this using the
  * Linux event driver.  I have no intention of ever supporting raw
@@ -29,24 +48,6 @@
  * continuously.  I suppose I could use a SIGIO handler instead, but
  * this is easier, and probably more reliable as well, given my lack
  * of success with SIGIO in the deep, dark past.
- */
-/* $Copyright: $
- * Copyright (c) 2022-2025 by Steve Baker (steve.baker.llc@gmail.com)
- *   and Thomas Moore (darktjm@gmail.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #define USE_THREADS 1
 

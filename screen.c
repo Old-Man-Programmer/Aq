@@ -16,6 +16,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+
 #include "Aq.h"
 
 /* Color codes:
@@ -32,15 +33,13 @@
   +---------+-----------+  +---------+------------+
 */
 
-int _screen_needsupdate = 0;
-
 #define SCREEN	0x3028
 #define COLOR	0x3428
 
 struct color {
   int r, g, b;
 } aq_colors[16] = {
-  {22, 22, 22},		// BLACK
+  {0, 0, 0},		// BLACK
   {216, 16, 46},	// RED
   {17, 196, 0},		// GREEN
   {208, 190, 22},	// YELLOW
@@ -63,55 +62,136 @@ int _colors[] = {
   7, 6,  5,  4, 11, 10,  3,  8
 };
 
-static int _bordercolor, _cbgcolor = 0, _rw, _rh;
+static int _bordercolor, _cbgcolor = 0;
+int _xorigin, _yorigin, _screen_w, _screen_h, _border, _scale = 5;
+SDL_Surface *_screen;
+uint8_t *_cdata;
 
-WINDOW *_rootwin, *_cwin;
-
-
-static int color(uint8_t data)
+void color(uint8_t data, uint32_t *fg, uint32_t *bg)
 {
-  return data?data:256;
-
+  int f = data>>4, b = data&0xF;
+  *fg = SDL_MapRGB(_screen->format, aq_colors[f].r, aq_colors[f].g, aq_colors[f].b);
+  *bg = SDL_MapRGB(_screen->format, aq_colors[b].r, aq_colors[b].g, aq_colors[b].b);
 //   int fg = (data>>4);
 //   int bg = (data&0x0F);
 // 
 //   return (_colors[fg]<<4)|_colors[bg];
 }
 
+/*
+ * Set the pixel at (x, y) to the given value
+ * NOTE: The surface must be locked before calling this!
+ */
+void putpixel(SDL_Surface *surface, int x, int y, Uint32 pixel)
+{
+    int bpp = surface->format->BytesPerPixel;
+    /* Here p is the address to the pixel we want to set */
+    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * bpp;
+
+    switch(bpp) {
+    case 1:
+        *p = pixel;
+        break;
+
+    case 2:
+        *(Uint16 *)p = pixel;
+        break;
+
+    case 3:
+        if(SDL_BYTEORDER == SDL_BIG_ENDIAN) {
+            p[0] = (pixel >> 16) & 0xff;
+            p[1] = (pixel >> 8) & 0xff;
+            p[2] = pixel & 0xff;
+        } else {
+            p[0] = pixel & 0xff;
+            p[1] = (pixel >> 8) & 0xff;
+            p[2] = (pixel >> 16) & 0xff;
+        }
+        break;
+
+    case 4:
+        *(Uint32 *)p = pixel;
+        break;
+    }
+}
+
+void writechar(int col, int row, int ch, uint32_t fg, uint32_t bg)
+{
+  int x, y, cr, cbit;
+
+  if (row < 0 || col < 0 || row > 23 || col > 39) {
+    fprintf(stderr,"col,row out of range. (%d,%d)\n", col, row);
+    abort();
+  }
+  /* Lock the screen for direct access to the pixels */
+  if ( SDL_MUSTLOCK(_screen) ) {
+    if ( SDL_LockSurface(_screen) < 0 ) {
+      fprintf(stderr, "Can't lock screen: %s\n", SDL_GetError());
+      return;
+    }
+  }
+
+  uint8_t *cbyte = &_cdata[ch<<3];
+
+  int xo = _xorigin + ((col*8)*_scale);
+  int yo = _yorigin + ((row*8)*_scale);
+
+  for(y=yo, cr = 0; cr < 8; (y+=_scale), cr++, cbyte++) {
+
+    for(cbit = 128, x = xo; cbit; (x+=_scale), (cbit>>=1)) {
+      uint32_t color = (*cbyte & cbit)? fg : bg;
+
+      for(int sy=0; sy < _scale; sy++) {
+	for(int sx=0; sx < _scale; sx++) {
+	  putpixel(_screen, x+sx, y+sy, color);
+	}
+      }
+
+    }
+  }
+  if ( SDL_MUSTLOCK(_screen) ) {
+    SDL_UnlockSurface(_screen);
+  }
+
+  /* Update just the part of the display that we've changed */
+  SDL_UpdateRect(_screen, xo, yo, 8*_scale, 8*_scale);
+}
+
+void fillrect(int x, int y, int width, int height, uint32_t bg)
+{
+  /* Lock the screen for direct access to the pixels */
+  if ( SDL_MUSTLOCK(_screen) ) {
+    if ( SDL_LockSurface(_screen) < 0 ) {
+      fprintf(stderr, "Can't lock screen: %s\n", SDL_GetError());
+      return;
+    }
+  }
+  for(int sy=y; sy < y+height; sy++) {
+    for(int sx=x; sx < x+width; sx++) {
+      putpixel(_screen, sx, sy, bg);
+    }
+  }
+  if ( SDL_MUSTLOCK(_screen) ) {
+    SDL_UnlockSurface(_screen);
+  }
+
+  /* Update just the part of the display that we've changed */
+  SDL_UpdateRect(_screen, x, y, width, height);
+}
 
 void screen_init(void)
 {
-  int i, j;
-  _rootwin = initscr();
-  start_color();
-  if (can_change_color()) {
-    for(i=0; i<16; i++)
-      init_color(i, aq_colors[i].r*4, aq_colors[i].g*4, aq_colors[i].b*4);
-    for(i=0;i<16;i++)
-      for(j=0;j<16;j++)
-	init_pair((i<<4)|j,i,j);
-  } else {
-    for(i=0;i<16;i++)
-      for(j=0;j<16;j++)
-	init_pair((i<<4)|j,_colors[i],_colors[j]);
-  }
-  init_pair(256, 0, 0);
+  _screen_w = (40*8)*_scale;
+  _screen_h = (24*8)*_scale;
+  _border = 10*_scale;
+  _xorigin = _yorigin = _border;
 
-  cbreak();
-  noecho();
-  raw();
-  curs_set(0);
-  getmaxyx(_rootwin, _rh, _rw);
-  if (_rh < 24 || _rw < 40) {
-    fprintf(stderr,"Screen size is too small, must be at least 40 columns x 25 rows\n");
-    quit();
+  _screen = SDL_SetVideoMode(_screen_w+(_border*2), _screen_h+(_border*2), 8, SDL_SWSURFACE);
+  if (_screen == NULL ) {
+    fprintf(stderr, "Couldn't set %dx%dx8 video mode: %s\n", _screen_w+(_border*2), _screen_h+(_border*2),
+                    SDL_GetError());
+    return;
   }
-  clear();
-  bkgd('.');
-  refresh();
-  _cwin = newwin(24, 40, (_rh-24)/2, (_rw-40)/2);
-  wclear(_cwin);
-  wrefresh(_cwin);
 }
 
 uint8_t screen_reader(_U uint16_t addr, uint8_t *cell)
@@ -124,7 +204,7 @@ uint8_t screen_reader(_U uint16_t addr, uint8_t *cell)
 
 uint8_t screen_writer(uint16_t addr, uint8_t *cell, uint8_t data)
 {
-  cchar_t ch;
+  uint32_t fg, bg;
   int row, col;
   uint8_t page = addr>>8, old;
   int pos;
@@ -134,10 +214,15 @@ uint8_t screen_writer(uint16_t addr, uint8_t *cell, uint8_t data)
   *cell = data;
   switch (addr) {
     case 0x3400:
-      _bordercolor = data;
-      clear();
-      bkgd(' ' | COLOR_PAIR(color(data)));
-      refresh();
+      color(_bordercolor = data, &fg, &bg);
+      fillrect(0, 0, _screen_w+(_border*2), _screen_h+(_border*2), bg);
+      for(int r=0; r<24; r++) {
+	for(int c=0; c<40; c++) {
+	  pos = (r*40)+c;
+	  color(load(COLOR+pos), &fg, &bg);
+	  writechar(c,r,load(SCREEN+pos), fg, bg);
+	}
+      }
       break;
     case 0x3421:
       _cbgcolor = data;
@@ -145,33 +230,21 @@ uint8_t screen_writer(uint16_t addr, uint8_t *cell, uint8_t data)
   }
   if ((page >= 0x34) && (page < 0x38)) {
     pos = addr - COLOR;
+    if (pos < 0) return data;
     row = pos/40;
     if (row < 0 || row > 23) return data;
     col = (pos%40);
-//    ch.attr = COLOR_PAIR(color(data));
-    ch.attr = 0;
-    ch.chars[0] = load(addr-0x0400); // + 0xE000;
-    if (ch.chars[0] < 32 || ch.chars[0] > 126) ch.chars[0] += 0xE000;
-    ch.chars[1] = 0;
-    ch.chars[2] = 0;
-    ch.ext_color = color(data);
-    mvwadd_wch(_cwin, row, col, &ch);
-    wrefresh(_cwin);
+    color(data, &fg, &bg);
+    writechar(col, row, load(addr-0x0400), fg, bg);
   }
   if (page >= 0x30 && page < 0x34) {
     pos = addr - SCREEN;
+    if (pos < 0) return data;
     row = pos/40;
     if (row < 0 || row > 23) return data;
     col = (pos%40);
-//    ch.attr = COLOR_PAIR(color(load(addr+0x0400)));
-    ch.attr = 0;
-    ch.chars[0] = (data); // +0xE000;
-    if (ch.chars[0] < 32 || ch.chars[0] > 126) ch.chars[0] += 0xE000;
-    ch.chars[1] = 0;
-    ch.chars[2] = 0;
-    ch.ext_color = color(load(addr+0x0400));
-    mvwadd_wch(_cwin, row, col, &ch);
-    wrefresh(_cwin);
+    color(load(addr+0x0400), &fg, &bg);
+    writechar(col, row, data, fg, bg);
   }
   return data;
 }

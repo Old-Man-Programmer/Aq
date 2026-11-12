@@ -4,8 +4,8 @@ This project is a console (Mattel | Radofin) *Aquarius* computer emulator.  It
 was created for nostalgia purposes, but also as potentially part of a larger
 and more proper open source emulator project.
 
-The early versions of this project used the console for input and screen output.
-Later versions use SDL/OpenGL.  Most of the work in the early versions was on
+This version switches away from using the console to SDL/OpenGL for the screen
+and input and a few fixes. Most of the work in the early versions was on
 getting basic functionality working and correctness.
 
 | | Command line options: |

@@ -16,6 +16,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+
 #include "Aq.h"
 
 int *_keybuf, _nkeys=0, _kb[MAXKEYS+1];
@@ -32,8 +33,14 @@ int main(int argc, char **argv)
 
   setlocale(LC_ALL, "en_US.utf-8");
 
+  if((SDL_Init(SDL_INIT_VIDEO)==-1)) { 
+    printf("Could not initialize SDL: %s.\n", SDL_GetError());
+    return -1;
+  }
+  SDL_EnableUNICODE( 1 );
+
   int n, i, j;
-  bool optf = TRUE;
+  bool optf = true;
   for(n=i=1;i<argc;i=n) {
     n++;
     if (optf && argv[i][0] == '-' && argv[i][1]) {
@@ -119,10 +126,6 @@ void quit(void)
 //   int mem = open("memory", O_WRONLY | O_CREAT | O_TRUNC, 0666);
 //   write(mem, _page[0x38]->ram, 0xFF);
 //   close(mem);
-
-  nocbreak();
-  noraw();
-  echo();
-  endwin();
-  exit(1);
+  SDL_Quit();
+  exit(0);
 }
